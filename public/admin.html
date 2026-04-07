@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>MsouWout Admin - Zone Management</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--blue:#00209F;--red:#D21034;--gold:#D4A017;--green:#22C55E;--yellow:#EAB308;--dark:#1A0C0C;--text:#2A1A1A;--text-light:#6A5A5A;--bg:#F4F6FA;--white:#fff;--radius:12px}
+body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column}
+
+/* Header */
+.header{background:var(--blue);color:#fff;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid var(--red)}
+.header h1{font-size:1.1rem;font-weight:800;display:flex;align-items:center;gap:10px}
+.header h1 img{width:32px;height:32px;border-radius:50%}
+.header-stats{display:flex;gap:16px;font-size:.78rem}
+.stat-badge{padding:4px 12px;border-radius:100px;font-weight:700}
+.stat-green{background:rgba(34,197,94,.15);color:#22C55E}
+.stat-yellow{background:rgba(234,179,8,.15);color:#EAB308}
+.stat-red{background:rgba(210,16,52,.15);color:#D21034}
+
+/* Layout */
+.layout{display:flex;flex:1;overflow:hidden}
+#map{flex:1;z-index:1}
+.sidebar{width:380px;background:var(--white);border-left:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;overflow:hidden}
+
+/* Sidebar tabs */
+.tabs{display:flex;border-bottom:1px solid rgba(0,0,0,.08)}
+.tab{flex:1;padding:12px;text-align:center;font-size:.82rem;font-weight:700;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-light);transition:all .2s}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+.tab:hover{color:var(--blue)}
+.tab-content{display:none;flex:1;overflow-y:auto;padding:16px}
+.tab-content.active{display:flex;flex-direction:column}
+
+/* Zone form */
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:.78rem;font-weight:700;color:var(--text);margin-bottom:4px}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:10px 14px;border:1.5px solid rgba(0,0,0,.1);border-radius:8px;font-size:.85rem;font-family:inherit}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:var(--blue)}
+.form-group textarea{min-height:60px;resize:vertical}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 20px;border-radius:100px;font-size:.85rem;font-weight:700;cursor:pointer;border:none;transition:all .2s;font-family:inherit;width:100%}
+.btn-blue{background:var(--blue);color:#fff}
+.btn-blue:hover{opacity:.9}
+.btn-red{background:var(--red);color:#fff}
+.btn-red:hover{opacity:.9}
+.btn-sm{padding:6px 14px;font-size:.75rem;width:auto;border-radius:8px}
+.btn-outline{background:transparent;border:1.5px solid rgba(0,0,0,.15);color:var(--text)}
+.btn-outline:hover{border-color:var(--blue);color:var(--blue)}
+
+/* Zone list */
+.zone-list{flex:1;overflow-y:auto}
+.zone-item{padding:12px 16px;border-bottom:1px solid rgba(0,0,0,.05);display:flex;align-items:center;gap:12px;cursor:pointer;transition:background .15s}
+.zone-item:hover{background:rgba(0,32,159,.03)}
+.zone-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.zone-dot.green{background:var(--green)}
+.zone-dot.yellow{background:var(--yellow)}
+.zone-dot.red{background:var(--red)}
+.zone-info{flex:1;min-width:0}
+.zone-name{font-size:.85rem;font-weight:700;color:var(--dark)}
+.zone-meta{font-size:.72rem;color:var(--text-light);margin-top:2px}
+.zone-actions{display:flex;gap:6px;flex-shrink:0}
+.zone-toggle{width:36px;height:20px;border-radius:10px;border:none;cursor:pointer;position:relative;transition:background .2s}
+.zone-toggle.on{background:var(--green)}
+.zone-toggle.off{background:#ccc}
+.zone-toggle::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:2px;transition:left .2s}
+.zone-toggle.on::after{left:18px}
+.zone-toggle.off::after{left:2px}
+
+/* Trip tester */
+.test-result{margin-top:16px;padding:14px;border-radius:var(--radius);font-size:.85rem;line-height:1.6}
+.test-result.approved{background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);color:#166534}
+.test-result.rejected{background:rgba(210,16,52,.08);border:1px solid rgba(210,16,52,.2);color:#991B1B}
+.test-result.manual_review{background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.2);color:#854D0E}
+
+/* Pending trips */
+.trip-item{padding:12px 16px;border-bottom:1px solid rgba(0,0,0,.05)}
+.trip-customer{font-weight:700;font-size:.85rem}
+.trip-route{font-size:.78rem;color:var(--text-light);margin:4px 0}
+.trip-actions{display:flex;gap:8px;margin-top:8px}
+
+.empty-state{text-align:center;padding:40px 20px;color:var(--text-light);font-size:.85rem}
+
+/* Instructions overlay */
+.draw-hint{position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:var(--blue);color:#fff;padding:10px 24px;border-radius:100px;font-size:.82rem;font-weight:700;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,.2);display:none}
+.draw-hint.show{display:block}
+
+@media(max-width:768px){
+  .layout{flex-direction:column}
+  .sidebar{width:100%;height:50vh}
+  #map{height:50vh}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><img src="https://msouwout.com/assets/msouwout-logo.jpg" alt=""> MsouWout Admin</h1>
+  <div class="header-stats" id="headerStats">
+    <span class="stat-badge stat-green" id="statGreen">0 Green</span>
+    <span class="stat-badge stat-yellow" id="statYellow">0 Yellow</span>
+    <span class="stat-badge stat-red" id="statRed">0 Red</span>
+  </div>
+</div>
+
+<div class="layout">
+  <div id="map"></div>
+
+  <div class="sidebar">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('zones')">Zones</div>
+      <div class="tab" onclick="switchTab('create')">Create Zone</div>
+      <div class="tab" onclick="switchTab('test')">Test Trip</div>
+      <div class="tab" onclick="switchTab('trips')">Pending</div>
+    </div>
+
+    <!-- ZONES LIST -->
+    <div class="tab-content active" id="tab-zones">
+      <div style="padding-bottom:10px;display:flex;gap:8px">
+        <button class="btn btn-sm btn-outline" onclick="filterZones('all')" style="flex:1">All</button>
+        <button class="btn btn-sm btn-outline" onclick="filterZones('green')" style="flex:1;color:var(--green)">Green</button>
+        <button class="btn btn-sm btn-outline" onclick="filterZones('yellow')" style="flex:1;color:var(--yellow)">Yellow</button>
+        <button class="btn btn-sm btn-outline" onclick="filterZones('red')" style="flex:1;color:var(--red)">Red</button>
+      </div>
+      <div class="zone-list" id="zoneList">
+        <div class="empty-state">Loading zones...</div>
+      </div>
+    </div>
+
+    <!-- CREATE ZONE -->
+    <div class="tab-content" id="tab-create">
+      <p style="font-size:.82rem;color:var(--text-light);margin-bottom:14px">Draw a polygon on the map, then fill in the details below.</p>
+      <div class="form-group">
+        <label>Zone Name</label>
+        <input type="text" id="zoneName" placeholder="e.g. Petion-Ville Business District">
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="zoneDesc" placeholder="Description of this zone..."></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Zone Type</label>
+          <select id="zoneType">
+            <option value="green">Green (Allowed)</option>
+            <option value="yellow">Yellow (Manual Approval)</option>
+            <option value="red">Red (Blocked)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Service Rule</label>
+          <select id="zoneService">
+            <option value="both">Rides & Delivery</option>
+            <option value="ride">Rides Only</option>
+            <option value="delivery">Delivery Only</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Active From (optional)</label>
+          <input type="time" id="zoneFrom">
+        </div>
+        <div class="form-group">
+          <label>Active Until (optional)</label>
+          <input type="time" id="zoneUntil">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Active Days (leave empty for all days)</label>
+        <div style="display:flex;gap:4px;flex-wrap:wrap" id="zoneDays">
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="0"> Sun</label>
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="1"> Mon</label>
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="2"> Tue</label>
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="3"> Wed</label>
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="4"> Thu</label>
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="5"> Fri</label>
+          <label style="font-size:.75rem;display:flex;align-items:center;gap:3px"><input type="checkbox" value="6"> Sat</label>
+        </div>
+      </div>
+      <button class="btn btn-blue" onclick="saveZone()" id="saveZoneBtn">Save Zone</button>
+      <p style="font-size:.75rem;color:var(--text-light);margin-top:8px;text-align:center" id="drawStatus">Draw a polygon on the map first</p>
+    </div>
+
+    <!-- TEST TRIP -->
+    <div class="tab-content" id="tab-test">
+      <p style="font-size:.82rem;color:var(--text-light);margin-bottom:14px">Test if a trip would be allowed. Click on the map to set pickup (first click) and destination (second click).</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Pickup Lat</label>
+          <input type="text" id="testPickupLat" placeholder="18.5425">
+        </div>
+        <div class="form-group">
+          <label>Pickup Lng</label>
+          <input type="text" id="testPickupLng" placeholder="-72.3386">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Destination Lat</label>
+          <input type="text" id="testDestLat" placeholder="18.5125">
+        </div>
+        <div class="form-group">
+          <label>Destination Lng</label>
+          <input type="text" id="testDestLng" placeholder="-72.2853">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Service Type</label>
+        <select id="testService">
+          <option value="ride">Ride</option>
+          <option value="delivery">Delivery</option>
+        </select>
+      </div>
+      <button class="btn btn-blue" onclick="testTrip()">Test Trip</button>
+      <div id="testResult"></div>
+    </div>
+
+    <!-- PENDING TRIPS -->
+    <div class="tab-content" id="tab-trips">
+      <div id="tripList">
+        <div class="empty-state">No pending trips</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="draw-hint" id="drawHint">Click the polygon tool on the map to draw a zone</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+const API_BASE = window.location.origin;
+const ADMIN_SECRET = new URLSearchParams(window.location.search).get('secret') || '';
+
+// Map setup - centered on Port-au-Prince
+const map = L.map('map').setView([18.5425, -72.3386], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap',
+  maxZoom: 19
+}).addTo(map);
+
+// Zone layers
+const zoneLayers = L.featureGroup().addTo(map);
+const testMarkers = L.featureGroup().addTo(map);
+
+// Drawing tools
+const drawControl = new L.Control.Draw({
+  draw: {
+    polygon: {
+      shapeOptions: { color: '#00209F', weight: 2 },
+      allowIntersection: false
+    },
+    polyline: false, rectangle: false, circle: false, circlemarker: false, marker: false
+  },
+  edit: { featureGroup: zoneLayers, remove: false }
+});
+map.addControl(drawControl);
+
+let drawnGeometry = null;
+let allZones = [];
+let testClickMode = 0; // 0=off, 1=pickup, 2=dest
+
+// Zone colors
+const ZONE_COLORS = { green: '#22C55E', yellow: '#EAB308', red: '#D21034' };
+const ZONE_FILLS = { green: 'rgba(34,197,94,.15)', yellow: 'rgba(234,179,8,.15)', red: 'rgba(210,16,52,.15)' };
+
+// Handle drawn polygon
+map.on(L.Draw.Event.CREATED, function(e) {
+  const layer = e.layer;
+  drawnGeometry = layer.toGeoJSON().geometry;
+  layer.setStyle({ color: '#00209F', weight: 2, fillOpacity: 0.1 });
+  zoneLayers.addLayer(layer);
+  layer._isNewDraw = true;
+  document.getElementById('drawStatus').textContent = 'Polygon drawn! Fill in the details and save.';
+  document.getElementById('drawStatus').style.color = '#22C55E';
+  switchTab('create');
+});
+
+// Map click for test mode
+map.on('click', function(e) {
+  if (testClickMode === 1) {
+    document.getElementById('testPickupLat').value = e.latlng.lat.toFixed(6);
+    document.getElementById('testPickupLng').value = e.latlng.lng.toFixed(6);
+    testMarkers.clearLayers();
+    L.marker(e.latlng, {icon: L.divIcon({html:'<div style="background:#22C55E;width:14px;height:14px;border-radius:50%;border:2px solid #fff"></div>', className:'', iconSize:[14,14]})}).addTo(testMarkers);
+    testClickMode = 2;
+    document.getElementById('drawHint').textContent = 'Now click the DESTINATION on the map';
+  } else if (testClickMode === 2) {
+    document.getElementById('testDestLat').value = e.latlng.lat.toFixed(6);
+    document.getElementById('testDestLng').value = e.latlng.lng.toFixed(6);
+    L.marker(e.latlng, {icon: L.divIcon({html:'<div style="background:#D21034;width:14px;height:14px;border-radius:50%;border:2px solid #fff"></div>', className:'', iconSize:[14,14]})}).addTo(testMarkers);
+    testClickMode = 0;
+    document.getElementById('drawHint').classList.remove('show');
+  }
+});
+
+// Tab switching
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    const tabs = ['zones','create','test','trips'];
+    t.classList.toggle('active', tabs[i] === name);
+  });
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+
+  if (name === 'test') {
+    testClickMode = 1;
+    document.getElementById('drawHint').textContent = 'Click the PICKUP location on the map';
+    document.getElementById('drawHint').classList.add('show');
+  } else {
+    testClickMode = 0;
+    document.getElementById('drawHint').classList.remove('show');
+  }
+}
+
+// Fetch headers
+function apiHeaders() {
+  return { 'Content-Type': 'application/json', 'X-Admin-Secret': ADMIN_SECRET };
+}
+
+// Load zones
+async function loadZones() {
+  try {
+    const res = await fetch(API_BASE + '/api/zones', { headers: apiHeaders() });
+    const data = await res.json();
+    allZones = data.features || [];
+    renderZones();
+    renderMap();
+    updateStats();
+  } catch (err) {
+    console.error('Failed to load zones:', err);
+    document.getElementById('zoneList').innerHTML = '<div class="empty-state">Failed to load zones. Is the server running?</div>';
+  }
+}
+
+function renderMap() {
+  // Remove old zone layers (keep drawn polygons)
+  zoneLayers.eachLayer(layer => {
+    if (!layer._isNewDraw) zoneLayers.removeLayer(layer);
+  });
+
+  allZones.forEach(feature => {
+    const type = feature.properties.zone_type;
+    const active = feature.properties.is_active;
+    const layer = L.geoJSON(feature, {
+      style: {
+        color: active ? ZONE_COLORS[type] : '#999',
+        weight: active ? 2 : 1,
+        fillColor: active ? ZONE_FILLS[type] : 'rgba(0,0,0,.05)',
+        fillOpacity: active ? 0.2 : 0.05,
+        dashArray: active ? null : '5,5'
+      }
+    });
+    layer.bindPopup(`
+      <strong>${feature.properties.name}</strong><br>
+      <span style="color:${ZONE_COLORS[type]}">&#9679;</span> ${type.toUpperCase()} zone<br>
+      ${feature.properties.service_rule !== 'both' ? 'Service: ' + feature.properties.service_rule + '<br>' : ''}
+      ${feature.properties.active_from ? 'Hours: ' + feature.properties.active_from + ' - ' + feature.properties.active_until + '<br>' : ''}
+      Status: ${active ? 'Active' : 'Inactive'}
+    `);
+    layer._zoneId = feature.properties.id;
+    zoneLayers.addLayer(layer);
+  });
+}
+
+function renderZones(filter = 'all') {
+  const list = document.getElementById('zoneList');
+  const filtered = filter === 'all' ? allZones : allZones.filter(z => z.properties.zone_type === filter);
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty-state">No zones found. Draw a polygon on the map to create one.</div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map(z => {
+    const p = z.properties;
+    const timeStr = p.active_from ? p.active_from + '-' + p.active_until : 'Always';
+    return `
+      <div class="zone-item" onclick="focusZone('${p.id}')">
+        <div class="zone-dot ${p.zone_type}"></div>
+        <div class="zone-info">
+          <div class="zone-name">${p.name}</div>
+          <div class="zone-meta">${p.service_rule} | ${timeStr} | ${p.is_active ? 'Active' : 'Inactive'}</div>
+        </div>
+        <div class="zone-actions">
+          <button class="zone-toggle ${p.is_active ? 'on' : 'off'}" onclick="event.stopPropagation();toggleZone('${p.id}')"></button>
+          <button class="btn btn-sm btn-outline" style="color:var(--red);border-color:var(--red);padding:4px 8px" onclick="event.stopPropagation();deleteZone('${p.id}')">&#10005;</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function filterZones(type) { renderZones(type); }
+
+function focusZone(id) {
+  zoneLayers.eachLayer(layer => {
+    if (layer._zoneId === id) {
+      map.fitBounds(layer.getBounds(), { padding: [50, 50] });
+      layer.openPopup();
+    }
+  });
+}
+
+function updateStats() {
+  const counts = { green: 0, yellow: 0, red: 0 };
+  allZones.forEach(z => { if (z.properties.is_active) counts[z.properties.zone_type]++; });
+  document.getElementById('statGreen').textContent = counts.green + ' Green';
+  document.getElementById('statYellow').textContent = counts.yellow + ' Yellow';
+  document.getElementById('statRed').textContent = counts.red + ' Red';
+}
+
+// Save zone
+async function saveZone() {
+  if (!drawnGeometry) {
+    alert('Please draw a polygon on the map first!');
+    return;
+  }
+
+  const name = document.getElementById('zoneName').value.trim();
+  if (!name) { alert('Please enter a zone name'); return; }
+
+  const checkedDays = [...document.querySelectorAll('#zoneDays input:checked')].map(c => parseInt(c.value));
+
+  const body = {
+    name,
+    description: document.getElementById('zoneDesc').value.trim(),
+    zone_type: document.getElementById('zoneType').value,
+    service_rule: document.getElementById('zoneService').value,
+    geometry: drawnGeometry,
+    active_from: document.getElementById('zoneFrom').value || null,
+    active_until: document.getElementById('zoneUntil').value || null,
+    active_days: checkedDays.length > 0 ? checkedDays : null
+  };
+
+  try {
+    const res = await fetch(API_BASE + '/api/zones', {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) throw new Error('Failed to save');
+
+    // Reset form
+    drawnGeometry = null;
+    document.getElementById('zoneName').value = '';
+    document.getElementById('zoneDesc').value = '';
+    document.getElementById('zoneFrom').value = '';
+    document.getElementById('zoneUntil').value = '';
+    document.querySelectorAll('#zoneDays input').forEach(c => c.checked = false);
+    document.getElementById('drawStatus').textContent = 'Draw a polygon on the map first';
+    document.getElementById('drawStatus').style.color = 'var(--text-light)';
+
+    // Remove drawn layer
+    zoneLayers.eachLayer(layer => { if (layer._isNewDraw) zoneLayers.removeLayer(layer); });
+
+    await loadZones();
+    switchTab('zones');
+  } catch (err) {
+    alert('Error saving zone: ' + err.message);
+  }
+}
+
+// Toggle zone
+async function toggleZone(id) {
+  try {
+    await fetch(API_BASE + '/api/zones/' + id + '/toggle', {
+      method: 'PATCH', headers: apiHeaders()
+    });
+    await loadZones();
+  } catch (err) { alert('Error toggling zone'); }
+}
+
+// Delete zone
+async function deleteZone(id) {
+  if (!confirm('Delete this zone permanently?')) return;
+  try {
+    await fetch(API_BASE + '/api/zones/' + id, {
+      method: 'DELETE', headers: apiHeaders()
+    });
+    await loadZones();
+  } catch (err) { alert('Error deleting zone'); }
+}
+
+// Test trip
+async function testTrip() {
+  const body = {
+    pickup_lat: document.getElementById('testPickupLat').value,
+    pickup_lng: document.getElementById('testPickupLng').value,
+    dest_lat: document.getElementById('testDestLat').value,
+    dest_lng: document.getElementById('testDestLng').value,
+    service_type: document.getElementById('testService').value
+  };
+
+  if (!body.pickup_lat || !body.dest_lat) {
+    alert('Please set pickup and destination coordinates');
+    return;
+  }
+
+  try {
+    const res = await fetch(API_BASE + '/api/trips/validate', {
+      method: 'POST', headers: apiHeaders(), body: JSON.stringify(body)
+    });
+    const result = await res.json();
+
+    const el = document.getElementById('testResult');
+    el.className = 'test-result ' + result.status;
+    el.innerHTML = `
+      <strong>${result.status === 'approved' ? 'APPROVED' : result.status === 'rejected' ? 'REJECTED' : 'MANUAL REVIEW'}</strong><br>
+      ${result.reason}<br>
+      ${result.details.pickup ? '<small>Pickup: ' + result.details.pickup.reason + '</small><br>' : ''}
+      ${result.details.destination ? '<small>Destination: ' + result.details.destination.reason + '</small>' : ''}
+      ${result.details.route_blocked ? '<br><small>Route crosses restricted area</small>' : ''}
+    `;
+
+    // Draw line on map
+    testMarkers.clearLayers();
+    const pLat = parseFloat(body.pickup_lat), pLng = parseFloat(body.pickup_lng);
+    const dLat = parseFloat(body.dest_lat), dLng = parseFloat(body.dest_lng);
+    const lineColor = result.status === 'approved' ? '#22C55E' : result.status === 'rejected' ? '#D21034' : '#EAB308';
+
+    L.marker([pLat, pLng], {icon: L.divIcon({html:'<div style="background:#22C55E;width:14px;height:14px;border-radius:50%;border:2px solid #fff"></div>', className:'', iconSize:[14,14]})}).addTo(testMarkers).bindPopup('Pickup');
+    L.marker([dLat, dLng], {icon: L.divIcon({html:'<div style="background:#D21034;width:14px;height:14px;border-radius:50%;border:2px solid #fff"></div>', className:'', iconSize:[14,14]})}).addTo(testMarkers).bindPopup('Destination');
+    L.polyline([[pLat, pLng], [dLat, dLng]], {color: lineColor, weight: 3, dashArray: '8,8'}).addTo(testMarkers);
+  } catch (err) {
+    document.getElementById('testResult').className = 'test-result rejected';
+    document.getElementById('testResult').textContent = 'Error: Could not validate trip. Is the server running?';
+  }
+}
+
+// Load pending trips
+async function loadPendingTrips() {
+  try {
+    const res = await fetch(API_BASE + '/api/trips?status=manual_review', { headers: apiHeaders() });
+    const trips = await res.json();
+
+    const list = document.getElementById('tripList');
+    if (trips.length === 0) {
+      list.innerHTML = '<div class="empty-state">No pending trips requiring approval</div>';
+      return;
+    }
+
+    list.innerHTML = trips.map(t => `
+      <div class="trip-item">
+        <div class="trip-customer">${t.customer_name || 'Unknown'} - ${t.customer_phone || 'No phone'}</div>
+        <div class="trip-route">${t.service_type} | (${t.pickup_lat.toFixed(4)}, ${t.pickup_lng.toFixed(4)}) → (${t.destination_lat.toFixed(4)}, ${t.destination_lng.toFixed(4)})</div>
+        <div class="trip-actions">
+          <button class="btn btn-sm" style="background:var(--green);color:#fff" onclick="approveTrip('${t.id}')">Approve</button>
+          <button class="btn btn-sm btn-red" onclick="rejectTrip('${t.id}')">Reject</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('Failed to load trips');
+  }
+}
+
+async function approveTrip(id) {
+  await fetch(API_BASE + '/api/trips/' + id + '/approve', { method: 'PATCH', headers: apiHeaders() });
+  loadPendingTrips();
+}
+
+async function rejectTrip(id) {
+  const reason = prompt('Rejection reason:');
+  if (reason === null) return;
+  await fetch(API_BASE + '/api/trips/' + id + '/reject', {
+    method: 'PATCH', headers: apiHeaders(), body: JSON.stringify({ reason })
+  });
+  loadPendingTrips();
+}
+
+// Initial load
+loadZones();
+setInterval(loadPendingTrips, 30000); // Poll pending trips every 30s
+loadPendingTrips();
+</script>
+</body>
+</html>
