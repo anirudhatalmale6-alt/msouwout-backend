@@ -1,25 +1,58 @@
 const pool = require('../db/pool');
 
 /**
+ * Ray-casting point-in-polygon algorithm.
+ * Checks if a point [lng, lat] is inside a polygon defined by coordinates array.
+ */
+function pointInPolygon(lng, lat, polygon) {
+  const coords = polygon.coordinates[0]; // outer ring
+  let inside = false;
+  for (let i = 0, j = coords.length - 1; i < coords.length; j = i++) {
+    const xi = coords[i][0], yi = coords[i][1];
+    const xj = coords[j][0], yj = coords[j][1];
+    const intersect = ((yi > lat) !== (yj > lat)) &&
+      (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Check if a line segment intersects a polygon.
+ * Uses simplified check: test multiple points along the line.
+ */
+function lineIntersectsPolygon(lng1, lat1, lng2, lat2, polygon) {
+  const steps = 20;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const lng = lng1 + t * (lng2 - lng1);
+    const lat = lat1 + t * (lat2 - lat1);
+    if (pointInPolygon(lng, lat, polygon)) return true;
+  }
+  return false;
+}
+
+/**
  * Check if a point falls within any active zone of a given type.
- * Returns the zone if found, null otherwise.
  */
 async function findZoneForPoint(lat, lng, serviceType = 'both') {
-  const query = `
-    SELECT id, name, zone_type, service_rule, active_from, active_until, active_days
+  const result = await pool.query(`
+    SELECT id, name, zone_type, service_rule, active_from, active_until, active_days, geometry
     FROM zones
     WHERE is_active = true
-      AND ST_Contains(geometry, ST_SetSRID(ST_Point($1, $2), 4326))
-      AND (service_rule = 'both' OR service_rule = $3)
+      AND (service_rule = 'both' OR service_rule = $1)
     ORDER BY
       CASE zone_type
         WHEN 'red' THEN 1
         WHEN 'yellow' THEN 2
         WHEN 'green' THEN 3
       END
-  `;
-  const result = await pool.query(query, [lng, lat, serviceType]);
-  return result.rows;
+  `, [serviceType]);
+
+  return result.rows.filter(zone => {
+    const geojson = typeof zone.geometry === 'string' ? JSON.parse(zone.geometry) : zone.geometry;
+    return pointInPolygon(lng, lat, geojson);
+  });
 }
 
 /**
@@ -30,14 +63,12 @@ function isZoneActiveNow(zone) {
 
   const now = new Date();
   const currentTime = now.getHours() * 60 + now.getMinutes();
-  const currentDay = now.getDay(); // 0=Sun
+  const currentDay = now.getDay();
 
-  // Check day restriction
   if (zone.active_days && zone.active_days.length > 0) {
     if (!zone.active_days.includes(currentDay)) return false;
   }
 
-  // Check time restriction
   if (zone.active_from && zone.active_until) {
     const [fromH, fromM] = zone.active_from.split(':').map(Number);
     const [toH, toM] = zone.active_until.split(':').map(Number);
@@ -47,7 +78,6 @@ function isZoneActiveNow(zone) {
     if (fromMinutes <= toMinutes) {
       return currentTime >= fromMinutes && currentTime <= toMinutes;
     } else {
-      // Overnight range (e.g., 22:00 - 06:00)
       return currentTime >= fromMinutes || currentTime <= toMinutes;
     }
   }
@@ -57,12 +87,10 @@ function isZoneActiveNow(zone) {
 
 /**
  * Validate a trip request.
- * Returns { allowed: boolean, status: string, reason: string, details: object }
  */
 async function validateTrip(pickupLat, pickupLng, destLat, destLng, serviceType = 'ride') {
   const svcType = serviceType === 'delivery' ? 'delivery' : 'ride';
 
-  // 1. Check pickup point
   const pickupZones = await findZoneForPoint(pickupLat, pickupLng, svcType);
   const pickupResult = evaluatePoint(pickupZones, 'pickup');
 
@@ -75,7 +103,6 @@ async function validateTrip(pickupLat, pickupLng, destLat, destLng, serviceType 
     };
   }
 
-  // 2. Check destination point
   const destZones = await findZoneForPoint(destLat, destLng, svcType);
   const destResult = evaluatePoint(destZones, 'destination');
 
@@ -88,7 +115,6 @@ async function validateTrip(pickupLat, pickupLng, destLat, destLng, serviceType 
     };
   }
 
-  // 3. Check if route crosses any red zones
   const routeCrossesRed = await checkRouteCrossesRedZone(
     pickupLat, pickupLng, destLat, destLng, svcType
   );
@@ -102,7 +128,6 @@ async function validateTrip(pickupLat, pickupLng, destLat, destLng, serviceType 
     };
   }
 
-  // 4. Determine final status
   if (pickupResult.needsApproval || destResult.needsApproval) {
     return {
       allowed: false,
@@ -136,7 +161,6 @@ function evaluatePoint(zones, label) {
     };
   }
 
-  // Red zones take priority
   const redZone = zones.find(z => z.zone_type === 'red');
   if (redZone && isZoneActiveNow(redZone)) {
     return {
@@ -148,7 +172,6 @@ function evaluatePoint(zones, label) {
     };
   }
 
-  // Yellow = manual approval
   const yellowZone = zones.find(z => z.zone_type === 'yellow');
   if (yellowZone && isZoneActiveNow(yellowZone)) {
     const greenZone = zones.find(z => z.zone_type === 'green' && isZoneActiveNow(z));
@@ -163,7 +186,6 @@ function evaluatePoint(zones, label) {
     }
   }
 
-  // Green = allowed
   const greenZone = zones.find(z => z.zone_type === 'green' && isZoneActiveNow(z));
   if (greenZone) {
     return {
@@ -175,7 +197,6 @@ function evaluatePoint(zones, label) {
     };
   }
 
-  // Has zones but none active right now (time restriction)
   return {
     blocked: true,
     needsApproval: false,
@@ -186,22 +207,23 @@ function evaluatePoint(zones, label) {
 }
 
 /**
- * Check if a straight-line route between two points crosses any red zone.
+ * Check if a straight-line route crosses any red zone.
  */
 async function checkRouteCrossesRedZone(lat1, lng1, lat2, lng2, serviceType) {
-  const query = `
-    SELECT id, name FROM zones
+  const result = await pool.query(`
+    SELECT id, name, geometry FROM zones
     WHERE is_active = true
       AND zone_type = 'red'
-      AND (service_rule = 'both' OR service_rule = $5)
-      AND ST_Intersects(
-        geometry,
-        ST_SetSRID(ST_MakeLine(ST_Point($1, $2), ST_Point($3, $4)), 4326)
-      )
-    LIMIT 1
-  `;
-  const result = await pool.query(query, [lng1, lat1, lng2, lat2, serviceType]);
-  return result.rows.length > 0;
+      AND (service_rule = 'both' OR service_rule = $1)
+  `, [serviceType]);
+
+  for (const zone of result.rows) {
+    const geojson = typeof zone.geometry === 'string' ? JSON.parse(zone.geometry) : zone.geometry;
+    if (lineIntersectsPolygon(lng1, lat1, lng2, lat2, geojson)) {
+      return true;
+    }
+  }
+  return false;
 }
 
-module.exports = { validateTrip, findZoneForPoint, isZoneActiveNow };
+module.exports = { validateTrip, findZoneForPoint, isZoneActiveNow, pointInPolygon };

@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
 
+const { initDatabase } = require('./db/init');
 const zonesRouter = require('./routes/zones');
 const tripsRouter = require('./routes/trips');
 const driversRouter = require('./routes/drivers');
@@ -48,9 +49,17 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'msouwout-geofence', timestamp: new Date().toISOString() });
 });
 
-app.listen(PORT, () => {
-  console.log(`MsouWout Geofencing API running on port ${PORT}`);
-  console.log(`Admin dashboard: http://localhost:${PORT}/admin`);
-});
+// Initialize database then start server
+initDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`MsouWout Geofencing API running on port ${PORT}`);
+      console.log(`Admin dashboard: http://localhost:${PORT}/admin`);
+    });
+  })
+  .catch(err => {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
+  });
 
 module.exports = app;

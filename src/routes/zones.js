@@ -8,8 +8,7 @@ router.get('/', async (req, res) => {
     const { active, type } = req.query;
     let query = `
       SELECT id, name, description, zone_type, service_rule, is_active,
-             active_from, active_until, active_days,
-             ST_AsGeoJSON(geometry)::json as geojson,
+             active_from, active_until, active_days, geometry,
              created_at, updated_at, created_by
       FROM zones
     `;
@@ -33,24 +32,27 @@ router.get('/', async (req, res) => {
     const result = await pool.query(query, params);
 
     // Convert to GeoJSON FeatureCollection
-    const features = result.rows.map(row => ({
-      type: 'Feature',
-      properties: {
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        zone_type: row.zone_type,
-        service_rule: row.service_rule,
-        is_active: row.is_active,
-        active_from: row.active_from,
-        active_until: row.active_until,
-        active_days: row.active_days,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        created_by: row.created_by
-      },
-      geometry: row.geojson
-    }));
+    const features = result.rows.map(row => {
+      const geojson = typeof row.geometry === 'string' ? JSON.parse(row.geometry) : row.geometry;
+      return {
+        type: 'Feature',
+        properties: {
+          id: row.id,
+          name: row.name,
+          description: row.description,
+          zone_type: row.zone_type,
+          service_rule: row.service_rule,
+          is_active: row.is_active,
+          active_from: row.active_from,
+          active_until: row.active_until,
+          active_days: row.active_days,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          created_by: row.created_by
+        },
+        geometry: geojson
+      };
+    });
 
     res.json({ type: 'FeatureCollection', features });
   } catch (err) {
@@ -69,21 +71,20 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'name, zone_type, and geometry are required' });
     }
 
-    const geojsonStr = typeof geometry === 'string' ? geometry : JSON.stringify(geometry);
+    const geojson = typeof geometry === 'string' ? geometry : JSON.stringify(geometry);
 
     const result = await pool.query(`
       INSERT INTO zones (name, description, zone_type, geometry, service_rule, is_active,
                          active_from, active_until, active_days, created_by)
-      VALUES ($1, $2, $3, ST_SetSRID(ST_GeomFromGeoJSON($4), 4326), $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)
       RETURNING id, name, zone_type, service_rule, is_active, created_at
     `, [
-      name, description || null, zone_type, geojsonStr,
+      name, description || null, zone_type, geojson,
       service_rule || 'both', is_active !== false,
       active_from || null, active_until || null, active_days || null,
       created_by || 'admin'
     ]);
 
-    // Log the action
     await pool.query(`
       INSERT INTO zone_audit_log (zone_id, action, changed_by, details)
       VALUES ($1, 'created', $2, $3)
@@ -106,13 +107,13 @@ router.put('/:id', async (req, res) => {
     let query, params;
 
     if (geometry) {
-      const geojsonStr = typeof geometry === 'string' ? geometry : JSON.stringify(geometry);
+      const geojson = typeof geometry === 'string' ? geometry : JSON.stringify(geometry);
       query = `
         UPDATE zones SET
           name = COALESCE($2, name),
           description = COALESCE($3, description),
           zone_type = COALESCE($4, zone_type),
-          geometry = ST_SetSRID(ST_GeomFromGeoJSON($5), 4326),
+          geometry = $5::jsonb,
           service_rule = COALESCE($6, service_rule),
           is_active = COALESCE($7, is_active),
           active_from = $8, active_until = $9, active_days = $10,
@@ -120,7 +121,7 @@ router.put('/:id', async (req, res) => {
         WHERE id = $1
         RETURNING id, name, zone_type, is_active, updated_at
       `;
-      params = [id, name, description, zone_type, geojsonStr, service_rule,
+      params = [id, name, description, zone_type, geojson, service_rule,
                 is_active, active_from || null, active_until || null, active_days || null];
     } else {
       query = `

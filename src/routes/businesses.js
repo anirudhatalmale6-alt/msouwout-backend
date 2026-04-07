@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db/pool');
+const { pointInPolygon } = require('../services/geofence');
 const router = express.Router();
 
 // POST /api/businesses - Register a new business (public)
@@ -21,16 +22,19 @@ router.post('/', async (req, res) => {
       return res.status(409).json({ error: 'A business with this name or phone already exists' });
     }
 
-    // Find which zone the business is in
+    // Find which zone the business is in using JS point-in-polygon
     let zone_id = null;
     if (lat && lng) {
-      const zoneResult = await pool.query(`
-        SELECT id FROM zones
-        WHERE ST_Contains(geometry, ST_SetSRID(ST_MakePoint($1, $2), 4326))
-          AND is_active = true AND zone_type = 'green'
-        LIMIT 1
-      `, [parseFloat(lng), parseFloat(lat)]);
-      if (zoneResult.rows.length > 0) zone_id = zoneResult.rows[0].id;
+      const zonesResult = await pool.query(
+        "SELECT id, geometry FROM zones WHERE is_active = true AND zone_type = 'green'"
+      );
+      for (const zone of zonesResult.rows) {
+        const geojson = typeof zone.geometry === 'string' ? JSON.parse(zone.geometry) : zone.geometry;
+        if (pointInPolygon(parseFloat(lng), parseFloat(lat), geojson)) {
+          zone_id = zone.id;
+          break;
+        }
+      }
     }
 
     const result = await pool.query(`
