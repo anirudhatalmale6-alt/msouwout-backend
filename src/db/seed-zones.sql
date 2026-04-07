@@ -1,5 +1,5 @@
 -- MsouWout Initial Launch Zones - Haiti Rides
--- Service: Restricted daytime operation (06:00 - 18:00)
+-- Service: Restricted daytime operation (06:00 - 20:00)
 -- All zones: Green (SERVICE_ALLOWED), rides only, daytime only, verified drivers required
 
 -- Clear existing zones for fresh seed
@@ -10,7 +10,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Turgeau',
   'Residential and commercial zone south of Champ de Mars. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -32,7 +32,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Canape Vert',
   'Commercial corridor with hospitals and businesses. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -54,7 +54,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Bourdon',
   'Upscale residential area with embassies and international organizations. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -76,7 +76,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Juvenat',
   'Residential neighborhood near Petion-Ville. Schools and institutions. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -98,7 +98,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Delmas 19 to Petion-Ville Corridor',
   'Major transit corridor connecting Delmas 19 through to Petion-Ville center. Corridor polygon.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -123,7 +123,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Montagne Noire',
   'Upscale hillside residential area above Petion-Ville. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -145,7 +145,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Pelerin',
   'Mountain residential community above Petion-Ville. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -167,7 +167,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Laboule',
   'Affluent hillside residential community. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -189,7 +189,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Thomassin',
   'Mountain town along Route de Kenscoff. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -211,7 +211,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Fermate',
   'Key junction connecting Petion-Ville to Kenscoff mountain route. Initial launch zone.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -233,7 +233,7 @@ INSERT INTO zones (name, description, zone_type, service_rule, is_active, active
 VALUES (
   'Kenscoff to Le Florville Corridor',
   'Mountain road corridor from Kenscoff down to Le Florville. Corridor polygon.',
-  'green', 'ride', true, '06:00', '18:00', NULL,
+  'green', 'ride', true, '06:00', '20:00', NULL,
   ST_SetSRID(ST_GeomFromGeoJSON('{
     "type": "Polygon",
     "coordinates": [[
@@ -265,7 +265,7 @@ INSERT INTO service_config (key, value) VALUES
   ('service_area_name', '"haiti_rides_initial_launch_zone"'),
   ('timezone', '"America/Port-au-Prince"'),
   ('service_mode', '"restricted_daytime_operation"'),
-  ('service_hours', '{"start": "06:00", "end": "18:00"}'),
+  ('service_hours', '{"start": "06:00", "end": "20:00"}'),
   ('cash_allowed', 'false'),
   ('verified_driver_required', 'true'),
   ('verified_rider_required', 'false'),
