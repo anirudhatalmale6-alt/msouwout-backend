@@ -112,9 +112,11 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
   <div class="sidebar">
     <div class="tabs">
       <div class="tab active" onclick="switchTab('zones')">Zones</div>
-      <div class="tab" onclick="switchTab('create')">Create Zone</div>
-      <div class="tab" onclick="switchTab('test')">Test Trip</div>
-      <div class="tab" onclick="switchTab('trips')">Pending</div>
+      <div class="tab" onclick="switchTab('create')">Create</div>
+      <div class="tab" onclick="switchTab('drivers')">Drivers</div>
+      <div class="tab" onclick="switchTab('businesses')">Business</div>
+      <div class="tab" onclick="switchTab('test')">Test</div>
+      <div class="tab" onclick="switchTab('trips')">Trips</div>
     </div>
 
     <!-- ZONES LIST -->
@@ -219,6 +221,32 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
       <div id="testResult"></div>
     </div>
 
+    <!-- DRIVERS -->
+    <div class="tab-content" id="tab-drivers">
+      <div style="padding-bottom:10px;display:flex;gap:8px">
+        <button class="btn btn-sm btn-outline" onclick="loadDrivers('pending')" style="flex:1;color:var(--gold)">Pending</button>
+        <button class="btn btn-sm btn-outline" onclick="loadDrivers('approved')" style="flex:1;color:var(--green)">Approved</button>
+        <button class="btn btn-sm btn-outline" onclick="loadDrivers()" style="flex:1">All</button>
+      </div>
+      <div id="driverStats" style="font-size:.75rem;color:var(--text-light);padding:4px 0 8px;border-bottom:1px solid rgba(0,0,0,.06);margin-bottom:8px"></div>
+      <div class="zone-list" id="driverList">
+        <div class="empty-state">Loading drivers...</div>
+      </div>
+    </div>
+
+    <!-- BUSINESSES -->
+    <div class="tab-content" id="tab-businesses">
+      <div style="padding-bottom:10px;display:flex;gap:8px">
+        <button class="btn btn-sm btn-outline" onclick="loadBusinesses('pending')" style="flex:1;color:var(--gold)">Pending</button>
+        <button class="btn btn-sm btn-outline" onclick="loadBusinesses('approved')" style="flex:1;color:var(--green)">Approved</button>
+        <button class="btn btn-sm btn-outline" onclick="loadBusinesses()" style="flex:1">All</button>
+      </div>
+      <div id="bizStats" style="font-size:.75rem;color:var(--text-light);padding:4px 0 8px;border-bottom:1px solid rgba(0,0,0,.06);margin-bottom:8px"></div>
+      <div class="zone-list" id="bizList">
+        <div class="empty-state">Loading businesses...</div>
+      </div>
+    </div>
+
     <!-- PENDING TRIPS -->
     <div class="tab-content" id="tab-trips">
       <div id="tripList">
@@ -301,7 +329,7 @@ map.on('click', function(e) {
 // Tab switching
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => {
-    const tabs = ['zones','create','test','trips'];
+    const tabs = ['zones','create','drivers','businesses','test','trips'];
     t.classList.toggle('active', tabs[i] === name);
   });
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -315,6 +343,8 @@ function switchTab(name) {
     testClickMode = 0;
     document.getElementById('drawHint').classList.remove('show');
   }
+  if (name === 'drivers') loadDrivers('pending');
+  if (name === 'businesses') loadBusinesses('pending');
 }
 
 // Fetch headers
@@ -574,9 +604,136 @@ async function rejectTrip(id) {
   loadPendingTrips();
 }
 
+// ═══ DRIVER MANAGEMENT ═══
+async function loadDrivers(status) {
+  try {
+    const url = status ? API_BASE + '/api/drivers?status=' + status : API_BASE + '/api/drivers';
+    const res = await fetch(url, { headers: apiHeaders() });
+    const drivers = await res.json();
+
+    // Stats
+    const statsRes = await fetch(API_BASE + '/api/drivers/stats', { headers: apiHeaders() });
+    const stats = await statsRes.json();
+    document.getElementById('driverStats').textContent = 'Total: ' + stats.total + ' | ' + stats.by_status.map(s => s.status + ': ' + s.count).join(' | ');
+
+    const list = document.getElementById('driverList');
+    if (drivers.length === 0) {
+      list.innerHTML = '<div class="empty-state">No drivers ' + (status ? '(' + status + ')' : '') + '</div>';
+      return;
+    }
+
+    list.innerHTML = drivers.map(d => {
+      const statusColor = d.status === 'approved' ? 'var(--green)' : d.status === 'pending' ? 'var(--gold)' : 'var(--red)';
+      return `
+        <div class="zone-item" style="flex-wrap:wrap">
+          <div class="zone-dot" style="background:${statusColor}"></div>
+          <div class="zone-info">
+            <div class="zone-name">${d.full_name}</div>
+            <div class="zone-meta">${d.phone} | ${d.vehicle_type} | ${d.license_plate || 'No plate'}</div>
+            <div class="zone-meta">${d.preferred_service || 'both'} | ${d.status.toUpperCase()}</div>
+          </div>
+          ${d.status === 'pending' ? `
+            <div class="zone-actions" style="width:100%;margin-top:8px;justify-content:flex-end">
+              <button class="btn btn-sm" style="background:var(--green);color:#fff;width:auto" onclick="approveDriver('${d.id}')">Approve</button>
+              <button class="btn btn-sm btn-red" style="width:auto" onclick="rejectDriver('${d.id}')">Reject</button>
+            </div>
+          ` : d.status === 'approved' ? `
+            <div class="zone-actions">
+              <button class="btn btn-sm btn-outline" style="color:var(--red);width:auto" onclick="suspendDriver('${d.id}')">Suspend</button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    console.error('Failed to load drivers:', err);
+    document.getElementById('driverList').innerHTML = '<div class="empty-state">Failed to load drivers</div>';
+  }
+}
+
+async function approveDriver(id) {
+  await fetch(API_BASE + '/api/drivers/' + id + '/approve', { method: 'PATCH', headers: apiHeaders() });
+  loadDrivers('pending');
+}
+
+async function rejectDriver(id) {
+  const reason = prompt('Rejection reason:');
+  if (reason === null) return;
+  await fetch(API_BASE + '/api/drivers/' + id + '/reject', {
+    method: 'PATCH', headers: apiHeaders(), body: JSON.stringify({ reason })
+  });
+  loadDrivers('pending');
+}
+
+async function suspendDriver(id) {
+  const reason = prompt('Suspension reason:');
+  if (reason === null) return;
+  await fetch(API_BASE + '/api/drivers/' + id + '/suspend', {
+    method: 'PATCH', headers: apiHeaders(), body: JSON.stringify({ reason })
+  });
+  loadDrivers('approved');
+}
+
+// ═══ BUSINESS MANAGEMENT ═══
+async function loadBusinesses(status) {
+  try {
+    const url = status ? API_BASE + '/api/businesses?status=' + status : API_BASE + '/api/businesses';
+    const res = await fetch(url, { headers: apiHeaders() });
+    const businesses = await res.json();
+
+    const statsRes = await fetch(API_BASE + '/api/businesses/stats', { headers: apiHeaders() });
+    const stats = await statsRes.json();
+    document.getElementById('bizStats').textContent = 'Total: ' + stats.total + ' | ' + stats.by_status.map(s => s.status + ': ' + s.count).join(' | ');
+
+    const list = document.getElementById('bizList');
+    if (businesses.length === 0) {
+      list.innerHTML = '<div class="empty-state">No businesses ' + (status ? '(' + status + ')' : '') + '</div>';
+      return;
+    }
+
+    list.innerHTML = businesses.map(b => {
+      const statusColor = b.status === 'approved' ? 'var(--green)' : b.status === 'pending' ? 'var(--gold)' : 'var(--red)';
+      return `
+        <div class="zone-item" style="flex-wrap:wrap">
+          <div class="zone-dot" style="background:${statusColor}"></div>
+          <div class="zone-info">
+            <div class="zone-name">${b.business_name}</div>
+            <div class="zone-meta">${b.contact_name} | ${b.phone}</div>
+            <div class="zone-meta">${b.business_type || 'other'} | ${b.service_needed || 'delivery'} | ${b.zone_name || 'No zone'}</div>
+            ${b.estimated_daily_orders ? '<div class="zone-meta">Est. orders/day: ' + b.estimated_daily_orders + '</div>' : ''}
+          </div>
+          ${b.status === 'pending' ? `
+            <div class="zone-actions" style="width:100%;margin-top:8px;justify-content:flex-end">
+              <button class="btn btn-sm" style="background:var(--green);color:#fff;width:auto" onclick="approveBiz('${b.id}')">Approve</button>
+              <button class="btn btn-sm btn-red" style="width:auto" onclick="rejectBiz('${b.id}')">Reject</button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    console.error('Failed to load businesses:', err);
+    document.getElementById('bizList').innerHTML = '<div class="empty-state">Failed to load businesses</div>';
+  }
+}
+
+async function approveBiz(id) {
+  await fetch(API_BASE + '/api/businesses/' + id + '/approve', { method: 'PATCH', headers: apiHeaders() });
+  loadBusinesses('pending');
+}
+
+async function rejectBiz(id) {
+  const reason = prompt('Rejection reason:');
+  if (reason === null) return;
+  await fetch(API_BASE + '/api/businesses/' + id + '/reject', {
+    method: 'PATCH', headers: apiHeaders(), body: JSON.stringify({ reason })
+  });
+  loadBusinesses('pending');
+}
+
 // Initial load
 loadZones();
-setInterval(loadPendingTrips, 30000); // Poll pending trips every 30s
+setInterval(loadPendingTrips, 30000);
 loadPendingTrips();
 </script>
 </body>

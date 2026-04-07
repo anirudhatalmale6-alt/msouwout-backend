@@ -1,0 +1,23 @@
+databases:
+  - name: msouwout-db
+    plan: free
+    databaseName: msouwout
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+services:
+  - type: web
+    plan: free
+    name: msouwout-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: msouwout-db
+          property: connectionString
+      - key: ADMIN_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production

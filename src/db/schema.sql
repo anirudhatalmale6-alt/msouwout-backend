@@ -54,11 +54,22 @@ CREATE TABLE drivers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     full_name VARCHAR(255) NOT NULL,
     phone VARCHAR(50) NOT NULL UNIQUE,
-    vehicle_type VARCHAR(50),
+    email VARCHAR(255),
+    vehicle_type VARCHAR(50) NOT NULL, -- motorcycle, car, van, truck
     license_plate VARCHAR(50),
+    license_number VARCHAR(100),
+    id_document_url TEXT,
+    license_document_url TEXT,
+    vehicle_document_url TEXT,
     photo_url TEXT,
+    preferred_zones UUID[],
+    preferred_service service_type DEFAULT 'both',
+    status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending, approved, rejected, suspended
     is_verified BOOLEAN NOT NULL DEFAULT false,
     is_active BOOLEAN NOT NULL DEFAULT true,
+    rejection_reason TEXT,
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    reviewed_by VARCHAR(255),
     current_lat DOUBLE PRECISION,
     current_lng DOUBLE PRECISION,
     last_location_update TIMESTAMP WITH TIME ZONE,
@@ -66,6 +77,32 @@ CREATE TABLE drivers (
 );
 
 CREATE INDEX idx_drivers_active ON drivers (is_active, is_verified);
+CREATE INDEX idx_drivers_status ON drivers (status);
+
+-- Businesses table
+CREATE TABLE businesses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    business_name VARCHAR(255) NOT NULL,
+    contact_name VARCHAR(255) NOT NULL,
+    phone VARCHAR(50) NOT NULL,
+    email VARCHAR(255),
+    business_type VARCHAR(100), -- restaurant, retail, grocery, pharmacy, other
+    address TEXT,
+    lat DOUBLE PRECISION,
+    lng DOUBLE PRECISION,
+    preferred_zone_id UUID REFERENCES zones(id),
+    service_needed service_type DEFAULT 'delivery',
+    estimated_daily_orders INTEGER,
+    business_license_url TEXT,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending, approved, rejected, suspended
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    rejection_reason TEXT,
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    reviewed_by VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_businesses_status ON businesses (status);
 
 -- Active trips (for live tracking)
 CREATE TABLE active_trips (
