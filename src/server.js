@@ -10,6 +10,7 @@ const zonesRouter = require('./routes/zones');
 const tripsRouter = require('./routes/trips');
 const driversRouter = require('./routes/drivers');
 const businessesRouter = require('./routes/businesses');
+const paymentsRouter = require('./routes/payments');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -38,6 +39,7 @@ app.use('/api/zones', adminAuth, zonesRouter);
 app.use('/api/trips', tripsRouter);
 app.use('/api/drivers', driversRouter);
 app.use('/api/businesses', businessesRouter);
+app.use('/api/payments', paymentsRouter);
 
 // Admin dashboard route
 app.get('/admin', (req, res) => {
