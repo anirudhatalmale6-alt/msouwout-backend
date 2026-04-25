@@ -149,3 +149,34 @@ CREATE TABLE IF NOT EXISTS service_config (
     value JSONB NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Ride requests with pricing
+CREATE TABLE IF NOT EXISTS ride_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    customer_name VARCHAR(255),
+    customer_phone VARCHAR(50) NOT NULL,
+    user_id VARCHAR(255),
+    pickup_lat DOUBLE PRECISION NOT NULL,
+    pickup_lng DOUBLE PRECISION NOT NULL,
+    dropoff_lat DOUBLE PRECISION NOT NULL,
+    dropoff_lng DOUBLE PRECISION NOT NULL,
+    ride_type VARCHAR(20) NOT NULL DEFAULT 'moto',
+    distance_km DOUBLE PRECISION,
+    duration_min INTEGER,
+    price INTEGER NOT NULL,
+    platform_fee INTEGER NOT NULL DEFAULT 0,
+    driver_earning INTEGER NOT NULL DEFAULT 0,
+    payment_method VARCHAR(50) NOT NULL DEFAULT 'cash',
+    tracking_code VARCHAR(20) UNIQUE,
+    driver_id UUID REFERENCES drivers(id),
+    status VARCHAR(50) NOT NULL DEFAULT 'searching',
+    cancel_reason TEXT,
+    started_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ride_requests_status ON ride_requests (status);
+CREATE INDEX IF NOT EXISTS idx_ride_requests_driver ON ride_requests (driver_id);
+CREATE INDEX IF NOT EXISTS idx_ride_requests_tracking ON ride_requests (tracking_code);

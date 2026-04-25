@@ -11,6 +11,8 @@ const tripsRouter = require('./routes/trips');
 const driversRouter = require('./routes/drivers');
 const businessesRouter = require('./routes/businesses');
 const paymentsRouter = require('./routes/payments');
+const ridesRouter = require('./routes/rides');
+const pricingRouter = require('./routes/pricing');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,6 +42,8 @@ app.use('/api/trips', tripsRouter);
 app.use('/api/drivers', driversRouter);
 app.use('/api/businesses', businessesRouter);
 app.use('/api/payments', paymentsRouter);
+app.use('/api/rides', ridesRouter);
+app.use('/api/pricing', pricingRouter);
 
 // Admin dashboard route
 app.get('/admin', (req, res) => {
