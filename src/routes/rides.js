@@ -109,13 +109,15 @@ router.post('/request', async (req, res) => {
 // GET /api/rides/:id — Get ride details
 router.get('/:id', async (req, res) => {
   try {
+    const param = req.params.id;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(param);
     const result = await pool.query(
       `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone,
               d.vehicle_type, d.license_plate, d.photo_url as driver_photo
        FROM ride_requests r
        LEFT JOIN drivers d ON r.driver_id = d.id
-       WHERE r.id = $1 OR r.tracking_code = $1`,
-      [req.params.id]
+       WHERE ${isUUID ? 'r.id = $1' : 'r.tracking_code = $1'}`,
+      [param]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Kous pa jwenn' });
