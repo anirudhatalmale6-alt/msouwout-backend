@@ -121,6 +121,42 @@ router.patch('/:id/reject', async (req, res) => {
   }
 });
 
+// POST /api/drivers/login - Phone-based driver login (public)
+router.post('/login', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    const clean = phone.replace(/[^0-9+]/g, '');
+    const result = await pool.query(`
+      SELECT id, full_name, phone, email, vehicle_type, license_plate,
+             preferred_service, status, is_verified, is_active,
+             created_at, reviewed_at, rejection_reason
+      FROM drivers WHERE phone = $1 OR phone = $2
+    `, [clean, phone.trim()]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No driver found with this phone number' });
+    }
+
+    const driver = result.rows[0];
+
+    const rides = await pool.query(`
+      SELECT id, ride_type, status, price, driver_earning, pickup_lat, pickup_lng,
+             dropoff_lat, dropoff_lng, created_at, completed_at, tracking_code
+      FROM ride_requests WHERE driver_id = $1
+      ORDER BY created_at DESC LIMIT 20
+    `, [driver.id]);
+
+    res.json({ driver, rides: rides.rows });
+  } catch (err) {
+    console.error('Driver login error:', err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
 // PATCH /api/drivers/:id/suspend
 router.patch('/:id/suspend', async (req, res) => {
   try {

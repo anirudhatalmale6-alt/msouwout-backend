@@ -106,6 +106,39 @@ router.post('/request', async (req, res) => {
   }
 });
 
+// POST /api/rides/history — User login / ride history by phone (public)
+router.post('/history', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    const clean = phone.replace(/[^0-9+]/g, '');
+    const result = await pool.query(`
+      SELECT id, customer_name, ride_type, status, price, payment_method,
+             tracking_code, created_at, completed_at, started_at,
+             pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
+             distance_km, duration_min
+      FROM ride_requests
+      WHERE customer_phone = $1 OR customer_phone = $2
+      ORDER BY created_at DESC LIMIT 30
+    `, [clean, phone.trim()]);
+
+    const name = result.rows.length > 0 ? result.rows[0].customer_name : null;
+
+    res.json({
+      customer_name: name,
+      phone: clean,
+      total_rides: result.rows.length,
+      rides: result.rows
+    });
+  } catch (err) {
+    console.error('Ride history error:', err);
+    res.status(500).json({ error: 'Failed to fetch history' });
+  }
+});
+
 // GET /api/rides/:id — Get ride details
 router.get('/:id', async (req, res) => {
   try {
