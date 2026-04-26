@@ -45,6 +45,33 @@ async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_ride_requests_driver ON ride_requests (driver_id);
         CREATE INDEX IF NOT EXISTS idx_ride_requests_tracking ON ride_requests (tracking_code);
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS conversations (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          ride_id UUID REFERENCES ride_requests(id),
+          driver_id UUID REFERENCES drivers(id),
+          rider_phone VARCHAR(50) NOT NULL,
+          rider_name VARCHAR(255),
+          last_message TEXT,
+          last_message_at TIMESTAMP WITH TIME ZONE,
+          is_archived BOOLEAN DEFAULT false,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          sender_type VARCHAR(10) NOT NULL DEFAULT 'rider',
+          sender_id VARCHAR(255),
+          content TEXT,
+          type VARCHAR(10) NOT NULL DEFAULT 'text',
+          file_url TEXT,
+          read_at TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversations_driver ON conversations (driver_id);
+        CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations (rider_phone);
+        CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages (conversation_id);
+      `);
       console.log('Migrations applied.');
       return;
     }
