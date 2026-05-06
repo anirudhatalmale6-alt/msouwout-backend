@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getPricingConfig, savePricingConfig, DEFAULT_CONFIG } = require('../services/pricing');
+const { getPricingConfig, savePricingConfig, getDynamicSurge, DEFAULT_CONFIG } = require('../services/pricing');
 
 // GET /api/pricing — Get current pricing config
 router.get('/', async (req, res) => {
@@ -9,6 +9,26 @@ router.get('/', async (req, res) => {
     res.json({ config, editable_fields: Object.keys(DEFAULT_CONFIG) });
   } catch (err) {
     console.error('Get pricing error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+// GET /api/pricing/surge — Get current dynamic surge info (public)
+router.get('/surge', async (req, res) => {
+  try {
+    const config = await getPricingConfig();
+    const surge = await getDynamicSurge(config);
+    res.json({
+      dynamic_pricing: config.dynamic_pricing,
+      multiplier: surge.multiplier,
+      factors: surge.factors,
+      hour: surge.hour,
+      active_rides: surge.active_rides,
+      raining: surge.raining,
+      max_surge: config.max_surge
+    });
+  } catch (err) {
+    console.error('Surge check error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
   }
 });

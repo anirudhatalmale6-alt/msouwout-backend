@@ -11,8 +11,91 @@ const DEFAULT_CONFIG = {
   gas_price: 725,
   baseline_gas_price: 500,
   commission_rate: 0.15,
-  surge_multiplier: 1.0
+  surge_multiplier: 1.0,
+  dynamic_pricing: true,
+  peak_morning_start: 7,
+  peak_morning_end: 9,
+  peak_evening_start: 16,
+  peak_evening_end: 19,
+  night_start: 22,
+  night_end: 5,
+  peak_surge: 1.15,
+  night_surge: 1.20,
+  rain_surge: 1.10,
+  high_demand_surge: 1.15,
+  demand_threshold: 5,
+  max_surge: 1.50
 };
+
+let weatherCache = { rain: false, ts: 0 };
+const WEATHER_TTL = 10 * 60 * 1000;
+const PAP_LAT = 18.54;
+const PAP_LNG = -72.34;
+
+async function checkRain() {
+  if (Date.now() - weatherCache.ts < WEATHER_TTL) return weatherCache.rain;
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${PAP_LAT}&longitude=${PAP_LNG}&current=rain,showers&timezone=America/Port-au-Prince`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const data = await resp.json();
+    const rain = (data.current?.rain || 0) > 0 || (data.current?.showers || 0) > 0;
+    weatherCache = { rain, ts: Date.now() };
+    return rain;
+  } catch (err) {
+    console.error('Weather check failed:', err.message);
+    return weatherCache.rain;
+  }
+}
+
+async function getActiveRideCount() {
+  try {
+    const result = await pool.query(
+      `SELECT COUNT(*) FROM ride_requests WHERE status IN ('searching','accepted','in_progress') AND created_at > NOW() - INTERVAL '30 minutes'`
+    );
+    return parseInt(result.rows[0].count) || 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+async function getDynamicSurge(config) {
+  if (!config.dynamic_pricing) return { multiplier: config.surge_multiplier || 1.0, factors: [] };
+
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Port-au-Prince' }));
+  const hour = now.getHours();
+  let multiplier = 1.0;
+  const factors = [];
+
+  const isPeakMorning = hour >= config.peak_morning_start && hour < config.peak_morning_end;
+  const isPeakEvening = hour >= config.peak_evening_start && hour < config.peak_evening_end;
+  if (isPeakMorning || isPeakEvening) {
+    multiplier *= config.peak_surge;
+    factors.push({ type: 'peak_traffic', label: 'Trafik wo', boost: config.peak_surge });
+  }
+
+  const isNight = hour >= config.night_start || hour < config.night_end;
+  if (isNight) {
+    multiplier *= config.night_surge;
+    factors.push({ type: 'night', label: 'Lannwit', boost: config.night_surge });
+  }
+
+  const isRaining = await checkRain();
+  if (isRaining) {
+    multiplier *= config.rain_surge;
+    factors.push({ type: 'rain', label: 'Lapli', boost: config.rain_surge });
+  }
+
+  const activeRides = await getActiveRideCount();
+  if (activeRides >= config.demand_threshold) {
+    multiplier *= config.high_demand_surge;
+    factors.push({ type: 'demand', label: 'Demand wo', boost: config.high_demand_surge, active_rides: activeRides });
+  }
+
+  if (multiplier > config.max_surge) multiplier = config.max_surge;
+  multiplier = parseFloat(multiplier.toFixed(2));
+
+  return { multiplier, factors, hour, active_rides: activeRides, raining: isRaining };
+}
 
 async function getPricingConfig() {
   try {
@@ -83,10 +166,14 @@ function calculateCommission(price, config) {
 
 async function calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideType) {
   const config = await getPricingConfig();
+  const surge = await getDynamicSurge(config);
+  const dynamicConfig = { ...config, surge_multiplier: surge.multiplier };
+
   const distanceKm = parseFloat(haversineDistance(pickupLat, pickupLng, dropoffLat, dropoffLng).toFixed(1));
   const durationMin = estimateDuration(distanceKm);
-  const price = calculatePrice(rideType, distanceKm, durationMin, config);
-  const commission = calculateCommission(price, config);
+  const price = calculatePrice(rideType, distanceKm, durationMin, dynamicConfig);
+  const basePrice = calculatePrice(rideType, distanceKm, durationMin, { ...config, surge_multiplier: 1.0 });
+  const commission = calculateCommission(price, dynamicConfig);
 
   const variance = Math.round(price * 0.08);
 
@@ -95,6 +182,7 @@ async function calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideT
     duration_min: durationMin,
     ride_type: rideType,
     price,
+    base_price: basePrice,
     price_range: {
       min: price - variance,
       max: price + variance
@@ -104,7 +192,8 @@ async function calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideT
       distance_charge: Math.round(distanceKm * (rideType === 'car' ? config.price_per_km_car : config.price_per_km_moto) * (config.gas_price / config.baseline_gas_price)),
       time_charge: Math.round(durationMin * config.price_per_min),
       security_fee: config.security_fee,
-      surge_multiplier: config.surge_multiplier || 1.0
+      surge_multiplier: surge.multiplier,
+      surge_factors: surge.factors
     },
     commission,
     currency: 'HTG'
@@ -117,6 +206,7 @@ module.exports = {
   calculatePrice,
   calculateCommission,
   calculateRide,
+  getDynamicSurge,
   haversineDistance,
   estimateDuration,
   DEFAULT_CONFIG
