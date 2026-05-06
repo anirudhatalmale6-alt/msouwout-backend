@@ -297,4 +297,86 @@ router.patch('/:id/cancel', async (req, res) => {
   }
 });
 
+// POST /api/rides/:id/emergency — Trigger SOS panic
+router.post('/:id/emergency', async (req, res) => {
+  try {
+    const { lat, lng, phone, name } = req.body;
+    const param = req.params.id;
+    const isUUID = /^[0-9a-f]{8}-/.test(param);
+    const ride = await pool.query(
+      `SELECT * FROM ride_requests WHERE ${isUUID ? 'id = $1' : 'tracking_code = $1'}`,
+      [param]
+    );
+
+    if (ride.rows.length > 0) {
+      await pool.query(
+        `UPDATE ride_requests SET status = 'emergency', updated_at = NOW() WHERE id = $1`,
+        [ride.rows[0].id]
+      );
+    }
+
+    await pool.query(
+      `INSERT INTO sos_alerts (phone, name, lat, lng, ride_id, platform, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, 'msouwout', 'active', NOW())`,
+      [phone || ride.rows[0]?.customer_phone || 'unknown', name || '', lat || null, lng || null, ride.rows[0]?.id || null]
+    );
+
+    res.status(201).json({ message: 'SOS voye! Ekip sekirite ap reponn.', status: 'active' });
+  } catch (err) {
+    console.error('Emergency error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+// GET /api/rides/:id/track — Get live tracking data for a ride
+router.get('/:id/track', async (req, res) => {
+  try {
+    const param = req.params.id;
+    const isUUID = /^[0-9a-f]{8}-/.test(param);
+    const result = await pool.query(
+      `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone,
+              d.vehicle_type, d.license_plate, d.photo_url as driver_photo,
+              d.current_lat as driver_lat, d.current_lng as driver_lng,
+              d.last_location_update
+       FROM ride_requests r
+       LEFT JOIN drivers d ON r.driver_id = d.id
+       WHERE ${isUUID ? 'r.id = $1' : 'r.tracking_code = $1'}`,
+      [param]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Kous pa jwenn' });
+    }
+
+    const ride = result.rows[0];
+    res.json({
+      ride_id: ride.id,
+      tracking_code: ride.tracking_code,
+      status: ride.status,
+      pickup: { lat: ride.pickup_lat, lng: ride.pickup_lng },
+      dropoff: { lat: ride.dropoff_lat, lng: ride.dropoff_lng },
+      rider: { name: ride.customer_name, phone: ride.customer_phone },
+      driver: ride.driver_id ? {
+        name: ride.driver_name,
+        phone: ride.driver_phone,
+        vehicle_type: ride.vehicle_type,
+        license_plate: ride.license_plate,
+        photo: ride.driver_photo,
+        lat: ride.driver_lat,
+        lng: ride.driver_lng,
+        location_updated: ride.last_location_update
+      } : null,
+      price: ride.price,
+      distance_km: ride.distance_km,
+      duration_min: ride.duration_min,
+      ride_type: ride.ride_type,
+      started_at: ride.started_at,
+      created_at: ride.created_at
+    });
+  } catch (err) {
+    console.error('Track ride error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 module.exports = router;

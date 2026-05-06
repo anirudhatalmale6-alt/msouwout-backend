@@ -178,4 +178,24 @@ router.patch('/:id/suspend', async (req, res) => {
   }
 });
 
+// POST /api/drivers/:id/location — Update driver GPS location
+router.post('/:id/location', async (req, res) => {
+  try {
+    const { lat, lng } = req.body;
+    if (!lat || !lng) return res.status(400).json({ error: 'lat ak lng obligatwa' });
+
+    const result = await pool.query(
+      `UPDATE drivers SET current_lat = $2, current_lng = $3, last_location_update = NOW()
+       WHERE id = $1 RETURNING id, full_name, current_lat, current_lng`,
+      [req.params.id, lat, lng]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Chofè pa jwenn' });
+    res.json({ updated: true, driver: result.rows[0] });
+  } catch (err) {
+    console.error('Location update error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 module.exports = router;

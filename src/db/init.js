@@ -72,6 +72,35 @@ async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations (rider_phone);
         CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages (conversation_id);
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS sos_alerts (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          phone VARCHAR(50) NOT NULL,
+          name VARCHAR(255),
+          lat DOUBLE PRECISION,
+          lng DOUBLE PRECISION,
+          ride_id UUID REFERENCES ride_requests(id),
+          platform VARCHAR(50) DEFAULT 'msouwout',
+          status VARCHAR(30) DEFAULT 'active',
+          admin_note TEXT,
+          responded_at TIMESTAMP WITH TIME ZONE,
+          resolved_at TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_sos_status ON sos_alerts (status);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ride_shares (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          ride_id UUID NOT NULL REFERENCES ride_requests(id),
+          share_code VARCHAR(20) NOT NULL UNIQUE,
+          shared_with_name VARCHAR(255),
+          shared_with_phone VARCHAR(50),
+          expires_at TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride_shares_code ON ride_shares (share_code);
+      `);
       const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
       await client.query(seed);
       console.log('Migrations applied, zones synced.')
