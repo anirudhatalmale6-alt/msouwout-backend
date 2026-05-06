@@ -101,6 +101,43 @@ async function initDatabase() {
         );
         CREATE INDEX IF NOT EXISTS idx_ride_shares_code ON ride_shares (share_code);
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS trusted_contacts (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          owner_phone VARCHAR(50) NOT NULL,
+          contact_name VARCHAR(255),
+          contact_phone VARCHAR(50) NOT NULL,
+          relationship VARCHAR(50) DEFAULT 'family',
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_trusted_owner ON trusted_contacts (owner_phone);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS route_checkpoints (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          ride_id UUID NOT NULL REFERENCES ride_requests(id),
+          lat DOUBLE PRECISION NOT NULL,
+          lng DOUBLE PRECISION NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_checkpoints_ride ON route_checkpoints (ride_id);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS safety_events (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          sos_id UUID REFERENCES sos_alerts(id),
+          ride_id UUID REFERENCES ride_requests(id),
+          event_type VARCHAR(50) NOT NULL,
+          data JSONB,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_safety_events_ride ON safety_events (ride_id);
+      `);
+      await client.query(`
+        ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS alert_level VARCHAR(20) DEFAULT 'warning';
+        ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS is_silent BOOLEAN DEFAULT false;
+        ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(50) DEFAULT 'manual';
+      `);
       const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
       await client.query(seed);
       console.log('Migrations applied, zones synced.')
