@@ -113,6 +113,76 @@ VALUES (
   'system_seed'
 ) ON CONFLICT DO NOTHING;
 
+-- 12. NAZON
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Nazon',
+  'Residential and commercial area along Avenue Nazon, north of Turgeau near Champ de Mars.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.338,18.547],[-72.33,18.547],[-72.327,18.543],[-72.328,18.539],[-72.333,18.537],[-72.339,18.539],[-72.34,18.543],[-72.338,18.547]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
+-- 13. DEBUSSY
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Debussy',
+  'Residential neighborhood in Delmas along Rue Debussy. Mixed residential and commercial.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.322,18.553],[-72.314,18.553],[-72.311,18.549],[-72.312,18.545],[-72.317,18.543],[-72.323,18.545],[-72.324,18.549],[-72.322,18.553]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
+-- 14. CATALPA
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Catalpa',
+  'Neighborhood near Bourdon and Canapé Vert, western Port-au-Prince residential area.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.349,18.538],[-72.341,18.538],[-72.338,18.534],[-72.339,18.53],[-72.344,18.528],[-72.35,18.53],[-72.351,18.534],[-72.349,18.538]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
+-- 15. PUIT BLAIN
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Puit Blain',
+  'Neighborhood in Delmas area around Delmas 31-33. Active commercial and residential zone.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.314,18.559],[-72.306,18.559],[-72.303,18.555],[-72.304,18.551],[-72.309,18.549],[-72.315,18.551],[-72.316,18.555],[-72.314,18.559]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
+-- 16. CLERCINE
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Clercine',
+  'Area near Delmas 75 and Tabarre. Residential neighborhood with growing commercial activity.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.3,18.562],[-72.291,18.562],[-72.288,18.558],[-72.289,18.553],[-72.294,18.551],[-72.301,18.553],[-72.302,18.558],[-72.3,18.562]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
+-- 17. ROUTE FRERES
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Route Frères',
+  'Major road corridor connecting Delmas to Petion-Ville via the east side. High traffic route.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.295,18.529],[-72.284,18.529],[-72.28,18.523],[-72.281,18.517],[-72.287,18.515],[-72.296,18.517],[-72.298,18.523],[-72.295,18.529]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
+-- 18. GIRARDO
+INSERT INTO zones (name, description, zone_type, service_rule, is_active, active_from, active_until, active_days, geometry, created_by)
+VALUES (
+  'Girardo',
+  'Neighborhood in the Delmas area. Residential zone with local businesses.',
+  'green', 'ride', true, '06:00', '20:00', NULL,
+  '{"type":"Polygon","coordinates":[[[-72.309,18.551],[-72.301,18.551],[-72.298,18.547],[-72.299,18.543],[-72.304,18.541],[-72.31,18.543],[-72.311,18.547],[-72.309,18.551]]]}',
+  'system_seed'
+) ON CONFLICT DO NOTHING;
+
 -- Global config
 INSERT INTO service_config (key, value) VALUES
   ('service_area_name', '"haiti_rides_initial_launch_zone"'),
