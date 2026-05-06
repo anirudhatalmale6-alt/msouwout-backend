@@ -72,7 +72,9 @@ async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations (rider_phone);
         CREATE INDEX IF NOT EXISTS idx_messages_convo ON messages (conversation_id);
       `);
-      console.log('Migrations applied.');
+      const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
+      await client.query(seed);
+      console.log('Migrations applied, zones synced.')
       return;
     }
 
