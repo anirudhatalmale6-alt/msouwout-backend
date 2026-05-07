@@ -138,6 +138,9 @@ async function initDatabase() {
         ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS is_silent BOOLEAN DEFAULT false;
         ALTER TABLE sos_alerts ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(50) DEFAULT 'manual';
       `);
+      await client.query(`
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS ride_pin VARCHAR(4);
+      `);
       const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
       await client.query(seed);
       console.log('Migrations applied, zones synced.')

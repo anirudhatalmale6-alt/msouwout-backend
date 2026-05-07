@@ -74,23 +74,25 @@ router.post('/request', async (req, res) => {
 
     const rideId = uuidv4();
     const trackingCode = 'MW-' + Date.now().toString(36).toUpperCase().slice(-6);
+    const ridePin = String(Math.floor(1000 + Math.random() * 9000));
 
     await pool.query(
       `INSERT INTO ride_requests
        (id, customer_name, customer_phone, user_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
         ride_type, distance_km, duration_min, price, platform_fee, driver_earning,
-        payment_method, tracking_code, status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'searching',NOW())`,
+        payment_method, tracking_code, ride_pin, status, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
        commission.platform_fee, commission.driver_earning,
-       payment_method || 'cash', trackingCode]
+       payment_method || 'cash', trackingCode, ridePin]
     );
 
     res.status(201).json({
       ride_id: rideId,
       tracking_code: trackingCode,
+      ride_pin: ridePin,
       status: 'searching',
       distance_km: estimate.distance_km,
       duration_min: estimate.duration_min,
@@ -233,18 +235,23 @@ router.patch('/:id/reject', async (req, res) => {
   }
 });
 
-// PATCH /api/rides/:id/start — Driver starts ride
+// PATCH /api/rides/:id/start — Driver starts ride (PIN required)
 router.patch('/:id/start', async (req, res) => {
   try {
+    const { pin } = req.body;
     const ride = await pool.query('SELECT * FROM ride_requests WHERE id = $1', [req.params.id]);
     if (ride.rows.length === 0) return res.status(404).json({ error: 'Kous pa jwenn' });
     if (ride.rows[0].status !== 'accepted') return res.status(400).json({ error: 'Kous dwe aksepte avan kòmanse' });
+
+    if (ride.rows[0].ride_pin && pin !== ride.rows[0].ride_pin) {
+      return res.status(403).json({ error: 'PIN pa kòrèk. Mande pasaje a pou PIN nan.', pin_required: true });
+    }
 
     await pool.query(
       `UPDATE ride_requests SET status = 'in_progress', started_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [req.params.id]
     );
-    res.json({ status: 'in_progress', message: 'Kous kòmanse!' });
+    res.json({ status: 'in_progress', message: 'PIN verifye! Kous kòmanse!' });
   } catch (err) {
     console.error('Start ride error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
@@ -349,10 +356,12 @@ router.get('/:id/track', async (req, res) => {
     }
 
     const ride = result.rows[0];
+    const showPin = req.query.pin === '1';
     res.json({
       ride_id: ride.id,
       tracking_code: ride.tracking_code,
       status: ride.status,
+      ride_pin: showPin ? ride.ride_pin : undefined,
       pickup: { lat: ride.pickup_lat, lng: ride.pickup_lng },
       dropoff: { lat: ride.dropoff_lat, lng: ride.dropoff_lng },
       rider: { name: ride.customer_name, phone: ride.customer_phone },
