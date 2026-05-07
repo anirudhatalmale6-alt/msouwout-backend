@@ -141,6 +141,115 @@ async function initDatabase() {
       await client.query(`
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS ride_pin VARCHAR(4);
       `);
+      // Logistics module
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS fleets (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          owner_name VARCHAR(255) NOT NULL,
+          company_name VARCHAR(255),
+          phone VARCHAR(50) NOT NULL,
+          email VARCHAR(255),
+          address TEXT,
+          lat DOUBLE PRECISION,
+          lng DOUBLE PRECISION,
+          status VARCHAR(30) NOT NULL DEFAULT 'pending',
+          is_verified BOOLEAN DEFAULT false,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_fleets_phone ON fleets (phone);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS trucks (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          fleet_id UUID REFERENCES fleets(id),
+          driver_id UUID REFERENCES drivers(id),
+          truck_type VARCHAR(50) NOT NULL,
+          make VARCHAR(100),
+          model VARCHAR(100),
+          year INTEGER,
+          license_plate VARCHAR(50),
+          registration_url TEXT,
+          insurance_url TEXT,
+          photo_url TEXT,
+          payload_capacity_kg INTEGER,
+          payload_capacity_desc VARCHAR(255),
+          is_available BOOLEAN DEFAULT true,
+          status VARCHAR(30) NOT NULL DEFAULT 'pending',
+          is_verified BOOLEAN DEFAULT false,
+          current_lat DOUBLE PRECISION,
+          current_lng DOUBLE PRECISION,
+          last_location_update TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_trucks_fleet ON trucks (fleet_id);
+        CREATE INDEX IF NOT EXISTS idx_trucks_type ON trucks (truck_type);
+        CREATE INDEX IF NOT EXISTS idx_trucks_available ON trucks (is_available, status);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS freight_loads (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tracking_code VARCHAR(20) UNIQUE,
+          posted_by_phone VARCHAR(50) NOT NULL,
+          posted_by_name VARCHAR(255),
+          business_id UUID REFERENCES businesses(id),
+          cargo_type VARCHAR(100) NOT NULL,
+          cargo_description TEXT,
+          weight_kg INTEGER,
+          quantity VARCHAR(100),
+          truck_type_needed VARCHAR(50),
+          pickup_address TEXT,
+          pickup_lat DOUBLE PRECISION NOT NULL,
+          pickup_lng DOUBLE PRECISION NOT NULL,
+          pickup_contact VARCHAR(255),
+          pickup_phone VARCHAR(50),
+          dropoff_address TEXT,
+          dropoff_lat DOUBLE PRECISION NOT NULL,
+          dropoff_lng DOUBLE PRECISION NOT NULL,
+          dropoff_contact VARCHAR(255),
+          dropoff_phone VARCHAR(50),
+          distance_km DOUBLE PRECISION,
+          price INTEGER,
+          currency VARCHAR(10) DEFAULT 'HTG',
+          urgency VARCHAR(20) DEFAULT 'normal',
+          pickup_date TIMESTAMP WITH TIME ZONE,
+          notes TEXT,
+          pickup_pin VARCHAR(6),
+          delivery_pin VARCHAR(6),
+          status VARCHAR(30) NOT NULL DEFAULT 'posted',
+          assigned_truck_id UUID REFERENCES trucks(id),
+          assigned_driver_id UUID REFERENCES drivers(id),
+          assigned_at TIMESTAMP WITH TIME ZONE,
+          picked_up_at TIMESTAMP WITH TIME ZONE,
+          in_transit_at TIMESTAMP WITH TIME ZONE,
+          delivered_at TIMESTAMP WITH TIME ZONE,
+          cancelled_at TIMESTAMP WITH TIME ZONE,
+          cancel_reason TEXT,
+          platform_fee INTEGER DEFAULT 0,
+          driver_earning INTEGER DEFAULT 0,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_freight_status ON freight_loads (status);
+        CREATE INDEX IF NOT EXISTS idx_freight_tracking ON freight_loads (tracking_code);
+        CREATE INDEX IF NOT EXISTS idx_freight_poster ON freight_loads (posted_by_phone);
+        CREATE INDEX IF NOT EXISTS idx_freight_truck ON freight_loads (assigned_truck_id);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS delivery_receipts (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          load_id UUID NOT NULL REFERENCES freight_loads(id),
+          receipt_type VARCHAR(20) NOT NULL DEFAULT 'delivery',
+          photo_url TEXT,
+          signature_url TEXT,
+          confirmed_by_name VARCHAR(255),
+          confirmed_by_phone VARCHAR(50),
+          lat DOUBLE PRECISION,
+          lng DOUBLE PRECISION,
+          notes TEXT,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_receipts_load ON delivery_receipts (load_id);
+      `);
       const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
       await client.query(seed);
       console.log('Migrations applied, zones synced.')
