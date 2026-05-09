@@ -435,15 +435,33 @@ router.get('/stats', async (req, res) => {
     const loads = await pool.query(`SELECT status, COUNT(*) as count FROM freight_loads GROUP BY status`);
     const trucks = await pool.query(`SELECT truck_type, COUNT(*) as count FROM trucks GROUP BY truck_type`);
     const fleets = await pool.query(`SELECT COUNT(*) as total FROM fleets`);
+    const verifiedFleets = await pool.query(`SELECT COUNT(*) as total FROM fleets WHERE is_verified = true`);
     const totalLoads = await pool.query(`SELECT COUNT(*) as total FROM freight_loads`);
+    const activeLoads = await pool.query(`SELECT COUNT(*) as total FROM freight_loads WHERE status NOT IN ('delivered','cancelled')`);
+    const totalTrucks = await pool.query(`SELECT COUNT(*) as total FROM trucks`);
+    const onlineTrucks = await pool.query(`SELECT COUNT(*) as total FROM trucks WHERE is_available = true AND status = 'approved'`);
+    const boatCount = await pool.query(`SELECT COUNT(*) as total FROM trucks WHERE truck_type IN ('boat_cargo','boat_ferry','boat_container','fishing_vessel')`);
     const revenue = await pool.query(`SELECT COALESCE(SUM(price),0) as total FROM freight_loads WHERE status = 'delivered'`);
+    const recentLoads = await pool.query(
+      `SELECT fl.id, fl.tracking_code, fl.cargo_type, fl.quantity, fl.weight_kg,
+              fl.pickup_address, fl.dropoff_address, fl.price, fl.urgency,
+              fl.truck_type_needed, fl.status, fl.created_at
+       FROM freight_loads fl WHERE fl.status = 'posted'
+       ORDER BY fl.created_at DESC LIMIT 6`
+    );
 
     res.json({
       loads_by_status: loads.rows,
       trucks_by_type: trucks.rows,
       total_fleets: parseInt(fleets.rows[0].total),
+      verified_fleets: parseInt(verifiedFleets.rows[0].total),
       total_loads: parseInt(totalLoads.rows[0].total),
-      total_revenue: parseInt(revenue.rows[0].total)
+      active_loads: parseInt(activeLoads.rows[0].total),
+      total_trucks: parseInt(totalTrucks.rows[0].total),
+      online_trucks: parseInt(onlineTrucks.rows[0].total),
+      active_boats: parseInt(boatCount.rows[0].total),
+      total_revenue: parseInt(revenue.rows[0].total),
+      recent_loads: recentLoads.rows
     });
   } catch (err) {
     res.status(500).json({ error: 'Erè sèvè' });
