@@ -16,6 +16,7 @@ const pricingRouter = require('./routes/pricing');
 const messagesRouter = require('./routes/messages');
 const safetyRouter = require('./routes/safety');
 const logisticsRouter = require('./routes/logistics');
+const medicalRouter = require('./routes/medical');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,6 +51,7 @@ app.use('/api/pricing', pricingRouter);
 app.use('/api/messages', messagesRouter);
 app.use('/api/safety', safetyRouter);
 app.use('/api/logistics', logisticsRouter);
+app.use('/api/medical', medicalRouter);
 
 // Admin dashboard route
 app.get('/admin', (req, res) => {

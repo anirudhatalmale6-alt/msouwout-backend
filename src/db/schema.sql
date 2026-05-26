@@ -168,14 +168,45 @@ CREATE TABLE IF NOT EXISTS ride_requests (
     driver_earning INTEGER NOT NULL DEFAULT 0,
     payment_method VARCHAR(50) NOT NULL DEFAULT 'cash',
     tracking_code VARCHAR(20) UNIQUE,
+    ride_pin VARCHAR(10),
     driver_id UUID REFERENCES drivers(id),
     status VARCHAR(50) NOT NULL DEFAULT 'searching',
     cancel_reason TEXT,
+    -- Medical assistance / DASH protection
+    medical_protection BOOLEAN NOT NULL DEFAULT false,
+    medical_fee INTEGER NOT NULL DEFAULT 0,
+    dash_fee INTEGER NOT NULL DEFAULT 0,
+    msouwout_medical_fee INTEGER NOT NULL DEFAULT 0,
+    -- Delegated ride (order for someone else)
+    is_delegated BOOLEAN NOT NULL DEFAULT false,
+    orderer_name VARCHAR(255),
+    orderer_phone VARCHAR(50),
+    passenger_name VARCHAR(255),
+    passenger_phone VARCHAR(50),
     started_at TIMESTAMP WITH TIME ZONE,
     completed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Medical claims for DASH protection
+CREATE TABLE IF NOT EXISTS medical_claims (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    ride_id UUID NOT NULL REFERENCES ride_requests(id),
+    claimant_name VARCHAR(255),
+    claimant_phone VARCHAR(50),
+    description TEXT NOT NULL,
+    photos TEXT[], -- array of photo URLs
+    status VARCHAR(50) NOT NULL DEFAULT 'pending', -- pending, reviewing, approved, rejected
+    admin_note TEXT,
+    reviewed_by VARCHAR(255),
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_medical_claims_ride ON medical_claims (ride_id);
+CREATE INDEX IF NOT EXISTS idx_medical_claims_status ON medical_claims (status);
 
 CREATE INDEX IF NOT EXISTS idx_ride_requests_status ON ride_requests (status);
 CREATE INDEX IF NOT EXISTS idx_ride_requests_driver ON ride_requests (driver_id);

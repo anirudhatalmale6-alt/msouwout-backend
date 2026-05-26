@@ -47,7 +47,13 @@ router.post('/calculate', async (req, res) => {
 // POST /api/rides/request — Request a ride
 router.post('/request', async (req, res) => {
   try {
-    const { user_id, customer_name, customer_phone, pickup, dropoff, ride_type, price, payment_method } = req.body;
+    const {
+      user_id, customer_name, customer_phone, pickup, dropoff, ride_type, price, payment_method,
+      // Medical protection toggle
+      medical_protection,
+      // Delegation fields (order for someone else)
+      is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone
+    } = req.body;
 
     if (!pickup || !dropoff || !customer_phone) {
       return res.status(400).json({ error: 'pickup, dropoff, ak customer_phone obligatwa' });
@@ -72,6 +78,22 @@ router.post('/request', async (req, res) => {
     const config = await pricing.getPricingConfig();
     const commission = pricing.calculateCommission(finalPrice, config);
 
+    // Medical fee calculation
+    const wantsMedical = medical_protection === true;
+    let medicalFee = 0, dashFee = 0, msouwoutMedicalFee = 0;
+    if (wantsMedical) {
+      const med = pricing.calculateMedicalFee(finalPrice);
+      medicalFee = med.medical_fee;
+      dashFee = med.dash_fee;
+      msouwoutMedicalFee = med.msouwout_medical_fee;
+    }
+
+    // Delegation validation
+    const delegated = is_delegated === true;
+    if (delegated && (!passenger_name || !passenger_phone)) {
+      return res.status(400).json({ error: 'passenger_name ak passenger_phone obligatwa pou kous delegasyon' });
+    }
+
     const rideId = uuidv4();
     const trackingCode = 'MW-' + Date.now().toString(36).toUpperCase().slice(-6);
     const ridePin = String(Math.floor(1000 + Math.random() * 9000));
@@ -80,16 +102,24 @@ router.post('/request', async (req, res) => {
       `INSERT INTO ride_requests
        (id, customer_name, customer_phone, user_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
         ride_type, distance_km, duration_min, price, platform_fee, driver_earning,
-        payment_method, tracking_code, ride_pin, status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',NOW())`,
+        payment_method, tracking_code, ride_pin, status,
+        medical_protection, medical_fee, dash_fee, msouwout_medical_fee,
+        is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
+        created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
        commission.platform_fee, commission.driver_earning,
-       payment_method || 'cash', trackingCode, ridePin]
+       payment_method || 'cash', trackingCode, ridePin,
+       wantsMedical, medicalFee, dashFee, msouwoutMedicalFee,
+       delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
+       delegated ? (orderer_phone || customer_phone) : null,
+       delegated ? passenger_name : null, delegated ? passenger_phone : null]
     );
 
-    res.status(201).json({
+    const response = {
       ride_id: rideId,
       tracking_code: trackingCode,
       ride_pin: ridePin,
@@ -101,7 +131,23 @@ router.post('/request', async (req, res) => {
       driver_earning: commission.driver_earning,
       payment_method: payment_method || 'cash',
       message: 'Ap chèche chofè...'
-    });
+    };
+
+    if (wantsMedical) {
+      response.medical_protection = true;
+      response.medical_fee = medicalFee;
+      response.dash_fee = dashFee;
+      response.msouwout_medical_fee = msouwoutMedicalFee;
+    }
+
+    if (delegated) {
+      response.is_delegated = true;
+      response.orderer = { name: orderer_name || customer_name || 'Kliyan', phone: orderer_phone || customer_phone };
+      response.passenger = { name: passenger_name, phone: passenger_phone };
+      response.share_link = `${req.protocol}://${req.get('host')}/api/rides/${trackingCode}/track`;
+    }
+
+    res.status(201).json(response);
   } catch (err) {
     console.error('Request ride error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
@@ -357,7 +403,7 @@ router.get('/:id/track', async (req, res) => {
 
     const ride = result.rows[0];
     const showPin = req.query.pin === '1';
-    res.json({
+    const trackResponse = {
       ride_id: ride.id,
       tracking_code: ride.tracking_code,
       status: ride.status,
@@ -381,7 +427,23 @@ router.get('/:id/track', async (req, res) => {
       ride_type: ride.ride_type,
       started_at: ride.started_at,
       created_at: ride.created_at
-    });
+    };
+
+    // Include medical protection info
+    if (ride.medical_protection) {
+      trackResponse.medical_protection = true;
+      trackResponse.medical_fee = ride.medical_fee;
+    }
+
+    // Include delegation info
+    if (ride.is_delegated) {
+      trackResponse.is_delegated = true;
+      trackResponse.orderer = { name: ride.orderer_name, phone: ride.orderer_phone };
+      trackResponse.passenger = { name: ride.passenger_name, phone: ride.passenger_phone };
+      trackResponse.share_link = `${req.protocol}://${req.get('host')}/api/rides/${ride.tracking_code}/track`;
+    }
+
+    res.json(trackResponse);
   } catch (err) {
     console.error('Track ride error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
