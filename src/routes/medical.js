@@ -5,15 +5,25 @@ const { v4: uuidv4 } = require('uuid');
 
 // DASH emergency contact & facility data
 const DASH_CONFIG = {
-  emergency_phone: '+50941000000',
-  emergency_whatsapp: '+50941000000',
+  emergency_phone: '+50933333274',
+  emergency_whatsapp: '+50933333274',
   name: 'DASH Medical Assistance',
+  website: 'www.dashhaiti.org',
   facilities: [
-    { name: 'DASH Centre Médical Pétion-Ville', lat: 18.5125, lng: -72.2854, address: 'Pétion-Ville, Route de Frères', phone: '+50941000001', type: 'clinic' },
-    { name: 'DASH Clinique Delmas', lat: 18.5410, lng: -72.3150, address: 'Delmas 33', phone: '+50941000002', type: 'clinic' },
-    { name: 'DASH Partenaire - Hôpital Bernard Mevs', lat: 18.5340, lng: -72.3420, address: 'Port-au-Prince, Cité Militaire', phone: '+50922222777', type: 'hospital' },
-    { name: 'DASH Partenaire - Hôpital Canapé Vert', lat: 18.5280, lng: -72.3180, address: 'Canapé-Vert', phone: '+50922222888', type: 'hospital' },
-    { name: 'DASH Centre Cap-Haïtien', lat: 19.7600, lng: -72.2000, address: 'Cap-Haïtien, Centre-Ville', phone: '+50941000003', type: 'clinic' }
+    // Hospitals
+    { name: 'Hôpital Jude Anne', lat: 18.5420, lng: -72.3250, address: 'Delmas 18', phone: '+50933333274', type: 'hospital' },
+    { name: 'Hôpital St-Landry', lat: 18.5110, lng: -72.2870, address: 'Pétion-Ville, Route de Frères', phone: '+50933333274', type: 'hospital' },
+    { name: 'Hôpital Saint Esprit', lat: 18.5450, lng: -72.3180, address: 'Delmas 31', phone: '+50933333274', type: 'hospital' },
+    { name: 'Hôpital Sainte Claire', lat: 18.5455, lng: -72.3175, address: 'Delmas 31', phone: '+50933333274', type: 'hospital' },
+    { name: 'Hôpital Sainte Gene', lat: 18.5130, lng: -72.2850, address: 'Route de Frères', phone: '+50933333274', type: 'hospital' },
+    { name: 'Hôpital Mont-Carmel', lat: 18.5095, lng: -72.2920, address: 'Pétion-Ville, Bois Verna', phone: '+50933333274', type: 'hospital' },
+    { name: 'Hôpital Christ du Nord', lat: 19.7590, lng: -72.2010, address: 'Cap-Haïtien', phone: '+50933333274', type: 'hospital' },
+    // DASH Clinics & Centers
+    { name: 'La Croix Dieu', lat: 18.5520, lng: -72.3080, address: 'Delmas 48', phone: '+50933333274', type: 'clinic' },
+    { name: 'DASH Centre-Ville CMC', lat: 18.5430, lng: -72.3400, address: '#91 Rue Oswald Durand', phone: '+50933333274', type: 'clinic' },
+    { name: 'DASH Tabarre', lat: 18.5580, lng: -72.2780, address: 'Route de Santo, Tabarre', phone: '+50933333274', type: 'clinic' },
+    { name: 'DASH Carries', lat: 19.4500, lng: -72.6900, address: 'Baie de Henne / Gonaïves', phone: '+50933333274', type: 'clinic' },
+    { name: 'DASH Montrouis', lat: 18.9500, lng: -72.7100, address: 'Entrée de Montrouis', phone: '+50933333274', type: 'clinic' }
   ]
 };
 
