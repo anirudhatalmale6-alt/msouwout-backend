@@ -165,22 +165,14 @@ function calculateCommission(price, config) {
 }
 
 /**
- * Calculate medical assistance fee (DASH protection).
- * 5% of ride price is the total medical fee.
- * - Rides <= 500 GDES: 3.5% to DASH, 1.5% to MsouWout
- * - Rides > 500 GDES: DASH gets flat 12.50 GDES, MsouWout gets the rest
+ * Calculate DASH Protection & Medical Assistance fee.
+ * MANDATORY 5% of ride price on every ride.
+ * Split: 4% to DASH Medical Assistance, 1% to MsouWout.
  */
 function calculateMedicalFee(price) {
   const totalFee = Math.round(price * 0.05);
-  let dashFee, msouwoutFee;
-
-  if (price <= 500) {
-    dashFee = Math.round(price * 0.035);
-    msouwoutFee = totalFee - dashFee;
-  } else {
-    dashFee = 13; // 12.50 rounded to nearest integer
-    msouwoutFee = totalFee - dashFee;
-  }
+  const dashFee = Math.round(price * 0.04);
+  const msouwoutFee = totalFee - dashFee;
 
   return {
     medical_fee: totalFee,

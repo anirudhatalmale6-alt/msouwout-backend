@@ -117,6 +117,7 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
       <div class="tab" onclick="switchTab('businesses')">Business</div>
       <div class="tab" onclick="switchTab('test')">Test</div>
       <div class="tab" onclick="switchTab('trips')">Trips</div>
+      <div class="tab" onclick="switchTab('dash')" style="color:var(--red)">DASH</div>
     </div>
 
     <!-- ZONES LIST -->
@@ -253,6 +254,44 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
         <div class="empty-state">No pending trips</div>
       </div>
     </div>
+
+    <!-- DASH MEDICAL DASHBOARD -->
+    <div class="tab-content" id="tab-dash" style="gap:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="background:rgba(210,16,52,.06);border:1px solid rgba(210,16,52,.15);border-radius:10px;padding:14px;text-align:center">
+          <div style="font-size:.68rem;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em">Total DASH Owed</div>
+          <div id="dashOwed" style="font-size:1.4rem;font-weight:800;color:var(--red)">--</div>
+          <div style="font-size:.65rem;color:var(--text-light)">HTG unsettled</div>
+        </div>
+        <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);border-radius:10px;padding:14px;text-align:center">
+          <div style="font-size:.68rem;font-weight:700;color:var(--green);text-transform:uppercase;letter-spacing:.05em">MsouWout Retained</div>
+          <div id="dashRetained" style="font-size:1.4rem;font-weight:800;color:var(--green)">--</div>
+          <div style="font-size:.65rem;color:var(--text-light)">HTG total (1%)</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div style="background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:12px;text-align:center">
+          <div style="font-size:.65rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Protected Rides</div>
+          <div id="dashRides" style="font-size:1.1rem;font-weight:800">--</div>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:12px;text-align:center">
+          <div style="font-size:.65rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Total Fees</div>
+          <div id="dashTotalFees" style="font-size:1.1rem;font-weight:800">--</div>
+        </div>
+        <div style="background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:12px;text-align:center">
+          <div style="font-size:.65rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Accidents</div>
+          <div id="dashAccidents" style="font-size:1.1rem;font-weight:800">--</div>
+        </div>
+      </div>
+      <div style="font-size:.72rem;font-weight:800;color:var(--text-light);text-transform:uppercase;letter-spacing:.05em;margin-top:4px">Settlement History</div>
+      <div id="dashSettlements" style="font-size:.82rem">
+        <div class="empty-state">Loading...</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-sm btn-blue" onclick="createSettlement()" style="flex:1">Create Settlement</button>
+        <button class="btn btn-sm btn-outline" onclick="exportDash()" style="flex:1">Export Records</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -329,7 +368,7 @@ map.on('click', function(e) {
 // Tab switching
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => {
-    const tabs = ['zones','create','drivers','businesses','test','trips'];
+    const tabs = ['zones','create','drivers','businesses','test','trips','dash'];
     t.classList.toggle('active', tabs[i] === name);
   });
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -345,6 +384,7 @@ function switchTab(name) {
   }
   if (name === 'drivers') loadDrivers('pending');
   if (name === 'businesses') loadBusinesses('pending');
+  if (name === 'dash') loadDashDashboard();
 }
 
 // Fetch headers
@@ -729,6 +769,73 @@ async function rejectBiz(id) {
     method: 'PATCH', headers: apiHeaders(), body: JSON.stringify({ reason })
   });
   loadBusinesses('pending');
+}
+
+// ==================== DASH DASHBOARD ====================
+async function loadDashDashboard() {
+  try {
+    const res = await fetch(API_BASE + '/api/medical/dashboard', { headers: apiHeaders() });
+    const data = await res.json();
+    const s = data.summary;
+    document.getElementById('dashOwed').textContent = (s.unsettled_dash_amount || 0).toLocaleString();
+    document.getElementById('dashRetained').textContent = (s.total_msouwout_fees || 0).toLocaleString();
+    document.getElementById('dashRides').textContent = s.total_protected_rides || 0;
+    document.getElementById('dashTotalFees').textContent = (s.total_medical_fees || 0).toLocaleString() + ' HTG';
+    document.getElementById('dashAccidents').textContent = (data.accidents ? data.accidents.total : 0);
+
+    // Settlements list
+    const el = document.getElementById('dashSettlements');
+    const all = [...(data.settlements.pending || []), ...(data.settlements.completed || [])];
+    if (all.length === 0) {
+      el.innerHTML = '<div class="empty-state">No settlements yet</div>';
+    } else {
+      el.innerHTML = all.map(s => {
+        const color = s.status === 'completed' ? 'var(--green)' : s.status === 'processing' ? 'var(--gold)' : 'var(--red)';
+        const date = s.period_start ? new Date(s.period_start).toLocaleDateString() + ' - ' + new Date(s.period_end).toLocaleDateString() : '';
+        return '<div style="padding:10px 0;border-bottom:1px solid rgba(0,0,0,.05);display:flex;align-items:center;gap:8px">' +
+          '<div style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0"></div>' +
+          '<div style="flex:1"><div style="font-weight:700">' + (s.dash_amount || 0).toLocaleString() + ' HTG → DASH</div>' +
+          '<div style="font-size:.7rem;color:var(--text-light)">' + date + ' | ' + (s.total_rides || 0) + ' rides | ' + s.status + '</div></div>' +
+          (s.status === 'pending' ? '<button class="btn btn-sm" style="background:var(--green);color:#fff;width:auto" onclick="markSettled(\'' + s.id + '\')">Mark Paid</button>' : '') +
+          '</div>';
+      }).join('');
+    }
+  } catch (err) {
+    console.error('Failed to load DASH dashboard:', err);
+  }
+}
+
+async function createSettlement() {
+  const end = new Date().toISOString();
+  const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  try {
+    const res = await fetch(API_BASE + '/api/medical/settlement', {
+      method: 'POST', headers: apiHeaders(),
+      body: JSON.stringify({ period_start: start, period_end: end })
+    });
+    const data = await res.json();
+    alert('Settlement created: ' + (data.dash_amount || 0) + ' HTG owed to DASH (' + (data.total_rides || 0) + ' rides)');
+    loadDashDashboard();
+  } catch (err) {
+    alert('Failed to create settlement');
+  }
+}
+
+async function markSettled(id) {
+  const ref = prompt('Bank transfer reference (optional):') || '';
+  try {
+    await fetch(API_BASE + '/api/medical/settlement/' + id, {
+      method: 'PATCH', headers: apiHeaders(),
+      body: JSON.stringify({ status: 'completed', dash_bank_ref: ref })
+    });
+    loadDashDashboard();
+  } catch (err) {
+    alert('Failed to update settlement');
+  }
+}
+
+function exportDash() {
+  window.open(API_BASE + '/api/medical/export?secret=' + ADMIN_SECRET, '_blank');
 }
 
 // Initial load

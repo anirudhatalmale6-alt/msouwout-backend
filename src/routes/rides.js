@@ -37,6 +37,15 @@ router.post('/calculate', async (req, res) => {
     }
 
     const estimate = await pricing.calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideType);
+    // Include DASH protection fee in estimate
+    const med = pricing.calculateMedicalFee(estimate.price);
+    estimate.medical_protection = {
+      fee: med.medical_fee,
+      dash_share: med.dash_fee,
+      msouwout_share: med.msouwout_medical_fee,
+      rate: '5%'
+    };
+    estimate.total_with_protection = estimate.price + med.medical_fee;
     res.json(estimate);
   } catch (err) {
     console.error('Calculate ride error:', err);
@@ -78,15 +87,12 @@ router.post('/request', async (req, res) => {
     const config = await pricing.getPricingConfig();
     const commission = pricing.calculateCommission(finalPrice, config);
 
-    // Medical fee calculation
-    const wantsMedical = medical_protection === true;
-    let medicalFee = 0, dashFee = 0, msouwoutMedicalFee = 0;
-    if (wantsMedical) {
-      const med = pricing.calculateMedicalFee(finalPrice);
-      medicalFee = med.medical_fee;
-      dashFee = med.dash_fee;
-      msouwoutMedicalFee = med.msouwout_medical_fee;
-    }
+    // DASH Protection & Medical Assistance — MANDATORY on every ride
+    const wantsMedical = true;
+    const med = pricing.calculateMedicalFee(finalPrice);
+    const medicalFee = med.medical_fee;
+    const dashFee = med.dash_fee;
+    const msouwoutMedicalFee = med.msouwout_medical_fee;
 
     // Delegation validation
     const delegated = is_delegated === true;
@@ -98,22 +104,24 @@ router.post('/request', async (req, res) => {
     const trackingCode = 'MW-' + Date.now().toString(36).toUpperCase().slice(-6);
     const ridePin = String(Math.floor(1000 + Math.random() * 9000));
 
+    const totalWithProtection = finalPrice + medicalFee;
+
     await pool.query(
       `INSERT INTO ride_requests
        (id, customer_name, customer_phone, user_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
         ride_type, distance_km, duration_min, price, platform_fee, driver_earning,
         payment_method, tracking_code, ride_pin, status,
-        medical_protection, medical_fee, dash_fee, msouwout_medical_fee,
+        medical_protection, medical_fee, dash_fee, msouwout_medical_fee, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
         created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,NOW())`,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
        commission.platform_fee, commission.driver_earning,
        payment_method || 'cash', trackingCode, ridePin,
-       wantsMedical, medicalFee, dashFee, msouwoutMedicalFee,
+       wantsMedical, medicalFee, dashFee, msouwoutMedicalFee, totalWithProtection,
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
        delegated ? passenger_name : null, delegated ? passenger_phone : null]
@@ -133,12 +141,11 @@ router.post('/request', async (req, res) => {
       message: 'Ap chèche chofè...'
     };
 
-    if (wantsMedical) {
-      response.medical_protection = true;
-      response.medical_fee = medicalFee;
-      response.dash_fee = dashFee;
-      response.msouwout_medical_fee = msouwoutMedicalFee;
-    }
+    response.medical_protection = true;
+    response.medical_fee = medicalFee;
+    response.dash_fee = dashFee;
+    response.msouwout_medical_fee = msouwoutMedicalFee;
+    response.total_with_protection = finalPrice + medicalFee;
 
     if (delegated) {
       response.is_delegated = true;
