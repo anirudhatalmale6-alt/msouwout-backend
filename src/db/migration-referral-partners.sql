@@ -15,8 +15,7 @@ CREATE TABLE IF NOT EXISTS referral_partners (
 );
 
 INSERT INTO referral_partners (code, name, commission_pct) VALUES
-  ('FTPH', 'FTPH - Fédération du Transport Public Haïtien', 0),
-  ('COTRASMOTHA', 'COTRASMOTHA', 0)
+  ('FTPH/COTRASMOTHA', 'FTPH/COTRASMOTHA', 0)
 ON CONFLICT (code) DO NOTHING;
 
 ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_partner VARCHAR(50);

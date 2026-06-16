@@ -340,8 +340,7 @@ async function initDatabase() {
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         INSERT INTO referral_partners (code, name, commission_pct) VALUES
-          ('FTPH', 'FTPH - Fédération du Transport Public Haïtien', 0),
-          ('COTRASMOTHA', 'COTRASMOTHA', 0)
+          ('FTPH/COTRASMOTHA', 'FTPH/COTRASMOTHA', 0)
         ON CONFLICT (code) DO NOTHING;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_partner VARCHAR(50);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50);
