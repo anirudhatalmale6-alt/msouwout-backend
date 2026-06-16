@@ -325,9 +325,31 @@ async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_accident_reports_ride ON accident_reports (ride_id);
         CREATE INDEX IF NOT EXISTS idx_accident_reports_status ON accident_reports (status);
       `);
+      // Referral partner tracking
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS referral_partners (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          code VARCHAR(50) NOT NULL UNIQUE,
+          name VARCHAR(255) NOT NULL,
+          contact_name VARCHAR(255),
+          contact_phone VARCHAR(50),
+          contact_email VARCHAR(255),
+          commission_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+          is_active BOOLEAN NOT NULL DEFAULT true,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        INSERT INTO referral_partners (code, name, commission_pct) VALUES
+          ('FTPH', 'FTPH - Fédération du Transport Public Haïtien', 0),
+          ('COTRASMOTHA', 'COTRASMOTHA', 0)
+        ON CONFLICT (code) DO NOTHING;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_partner VARCHAR(50);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50);
+        CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
+      `);
       const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
       await client.query(seed);
-      console.log('Migrations applied (incl. DASH settlements), zones synced.')
+      console.log('Migrations applied (incl. DASH settlements, referral partners), zones synced.')
       return;
     }
 
