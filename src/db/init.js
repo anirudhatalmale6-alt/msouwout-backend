@@ -344,7 +344,9 @@ async function initDatabase() {
         ON CONFLICT (code) DO NOTHING;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_partner VARCHAR(50);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS syndicate VARCHAR(50);
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
+        CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
       const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
       await client.query(seed);

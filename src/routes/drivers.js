@@ -7,7 +7,7 @@ router.post('/', async (req, res) => {
   try {
     const { full_name, phone, email, vehicle_type, license_plate,
             license_number, preferred_zones, preferred_service,
-            referral_partner, referral_code } = req.body;
+            referral_partner, referral_code, syndicate } = req.body;
 
     if (!full_name || !phone || !vehicle_type) {
       return res.status(400).json({ error: 'full_name, phone, and vehicle_type are required' });
@@ -22,14 +22,15 @@ router.post('/', async (req, res) => {
     const result = await pool.query(`
       INSERT INTO drivers (full_name, phone, email, vehicle_type, license_plate,
                           license_number, preferred_zones, preferred_service,
-                          referral_partner, referral_code, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+                          referral_partner, referral_code, syndicate, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
       RETURNING id, full_name, phone, vehicle_type, status, created_at
     `, [
       full_name, phone, email || null, vehicle_type,
       license_plate || null, license_number || null,
       preferred_zones || null, preferred_service || 'both',
-      referral_partner || null, referral_code || null
+      referral_partner || null, referral_code || null,
+      syndicate || null
     ]);
 
     res.status(201).json({
@@ -277,6 +278,91 @@ router.get('/partner-drivers', async (req, res) => {
   } catch (err) {
     console.error('Partner drivers error:', err);
     res.status(500).json({ error: 'Failed to fetch partner drivers' });
+  }
+});
+
+// GET /api/drivers/syndicate-stats - Stats by syndicate (with 2% commission)
+router.get('/syndicate-stats', async (req, res) => {
+  try {
+    const { syndicate } = req.query;
+    let where = '';
+    const params = [];
+
+    if (syndicate) {
+      params.push(syndicate);
+      where = ` WHERE d.syndicate = $${params.length}`;
+    }
+
+    const stats = await pool.query(`
+      SELECT
+        COALESCE(d.syndicate, 'Unassigned') as syndicate,
+        COUNT(*) as total_registered,
+        COUNT(*) FILTER (WHERE d.is_verified = true) as total_verified,
+        COUNT(*) FILTER (WHERE d.is_active = true AND d.status = 'approved') as active_drivers
+      FROM drivers d${where}
+      GROUP BY d.syndicate
+      ORDER BY total_registered DESC
+    `, params);
+
+    const tripStats = await pool.query(`
+      SELECT
+        COALESCE(d.syndicate, 'Unassigned') as syndicate,
+        COUNT(r.id) as total_trips,
+        COALESCE(SUM(r.price), 0) as total_revenue,
+        COALESCE(SUM(r.platform_fee), 0) as total_platform_fee
+      FROM drivers d
+      LEFT JOIN ride_requests r ON r.driver_id = d.id AND r.status = 'completed'${where}
+      GROUP BY d.syndicate
+    `, params);
+
+    const tripMap = {};
+    tripStats.rows.forEach(r => { tripMap[r.syndicate] = r; });
+
+    const combined = stats.rows.map(s => {
+      const revenue = parseInt(tripMap[s.syndicate]?.total_revenue || 0);
+      const platformFee = parseInt(tripMap[s.syndicate]?.total_platform_fee || 0);
+      return {
+        syndicate: s.syndicate,
+        total_registered: parseInt(s.total_registered),
+        total_verified: parseInt(s.total_verified),
+        active_drivers: parseInt(s.active_drivers),
+        total_trips: parseInt(tripMap[s.syndicate]?.total_trips || 0),
+        total_revenue: revenue,
+        total_platform_fee: platformFee,
+        syndicate_share: Math.round(platformFee * 0.02)
+      };
+    });
+
+    res.json(combined);
+  } catch (err) {
+    console.error('Syndicate stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch syndicate stats' });
+  }
+});
+
+// GET /api/drivers/syndicate-drivers - List drivers for a specific syndicate
+router.get('/syndicate-drivers', async (req, res) => {
+  try {
+    const { syndicate } = req.query;
+    if (!syndicate) return res.status(400).json({ error: 'syndicate parameter required' });
+
+    const result = await pool.query(`
+      SELECT d.id, d.full_name, d.phone, d.vehicle_type, d.status,
+             d.is_verified, d.is_active, d.syndicate, d.created_at,
+             COUNT(r.id) as trip_count,
+             COALESCE(SUM(CASE WHEN r.status = 'completed' THEN r.price ELSE 0 END), 0) as revenue,
+             COALESCE(SUM(CASE WHEN r.status = 'completed' THEN r.platform_fee ELSE 0 END), 0) as platform_fee
+      FROM drivers d
+      LEFT JOIN ride_requests r ON r.driver_id = d.id
+      WHERE d.syndicate = $1
+      GROUP BY d.id
+      ORDER BY d.created_at DESC
+    `, [syndicate]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Syndicate drivers error:', err);
+    res.status(500).json({ error: 'Failed to fetch syndicate drivers' });
   }
 });
 
