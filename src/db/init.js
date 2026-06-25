@@ -2,8 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('./pool');
 
-async function initDatabase() {
-  const client = await pool.connect();
+async function initDatabase(retries = 3) {
+  let client;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      client = await pool.connect();
+      break;
+    } catch (err) {
+      console.error(`DB connect attempt ${attempt}/${retries} failed:`, err.message);
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, 5000 * attempt));
+    }
+  }
   try {
     // Check if zones table exists
     const tableCheck = await client.query(`

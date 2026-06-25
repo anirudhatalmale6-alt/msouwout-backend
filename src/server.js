@@ -77,4 +77,4 @@ initDatabase()
   });
 
 module.exports = app;
-// deploy Tue May 06 07:20:00 AM UTC 2026
+// deploy Wed Jun 25 2026 - added DB retry logic
