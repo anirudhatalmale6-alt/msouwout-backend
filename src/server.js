@@ -58,23 +58,21 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'admin.html'));
 });
 
+let dbReady = false;
+let dbError = null;
+
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'msouwout-geofence', timestamp: new Date().toISOString() });
+  res.json({ status: dbReady ? 'ok' : 'degraded', db: dbReady, dbError: dbError ? dbError.message : null, service: 'msouwout-geofence', timestamp: new Date().toISOString() });
 });
 
-// Initialize database then start server
-initDatabase()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`MsouWout Geofencing API running on port ${PORT}`);
-      console.log(`Admin dashboard: http://localhost:${PORT}/admin`);
-    });
-  })
-  .catch(err => {
-    console.error('Failed to initialize database:', err);
-    process.exit(1);
-  });
+// Start server immediately, init DB in background
+app.listen(PORT, () => {
+  console.log(`MsouWout Geofencing API running on port ${PORT}`);
+  initDatabase()
+    .then(() => { dbReady = true; console.log('Database initialized successfully.'); })
+    .catch(err => { dbError = err; console.error('Database init failed:', err.message); });
+});
 
 module.exports = app;
 // deploy Wed Jun 25 2026 - added DB retry logic
