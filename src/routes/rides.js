@@ -4,6 +4,24 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
 const pricing = require('../services/pricing');
 
+// POST /api/rides/account/delete — user-initiated deletion of a rider's data
+// Required by App Store Guideline 5.1.1(v).
+router.post('/account/delete', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+    const clean = phone.replace(/[^0-9+]/g, '');
+    await pool.query(
+      'DELETE FROM ride_requests WHERE customer_phone = $1 OR customer_phone = $2',
+      [clean, phone.trim()]
+    );
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Rider delete error:', err);
+    res.status(500).json({ error: 'Delete failed' });
+  }
+});
+
 // POST /api/rides/calculate — Estimate ride price
 router.post('/calculate', async (req, res) => {
   try {

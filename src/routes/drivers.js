@@ -161,6 +161,22 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// POST /api/drivers/account/delete - user-initiated account deletion (public)
+// Required by App Store Guideline 5.1.1(v): apps that create accounts must
+// let the user delete their account from within the app.
+router.post('/account/delete', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+    const clean = phone.replace(/[^0-9+]/g, '');
+    await pool.query('DELETE FROM drivers WHERE phone = $1 OR phone = $2', [clean, phone.trim()]);
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Driver delete error:', err);
+    res.status(500).json({ error: 'Delete failed' });
+  }
+});
+
 // PATCH /api/drivers/:id/suspend
 router.patch('/:id/suspend', async (req, res) => {
   try {
