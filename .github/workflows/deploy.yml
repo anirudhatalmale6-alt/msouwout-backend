@@ -1,0 +1,87 @@
+name: Deploy to Render
+
+# Render's GitHub connection stopped delivering push events for this repo at some
+# point after 2026-04-25. The dashboard still reported "Auto-Deploy: yes", so five
+# commits — including the fix that starts the HTTP server before the database
+# connects — sat on main for months without ever reaching production. Nobody
+# noticed until the service went down.
+#
+# This workflow does not trust that connection. It calls Render's deploy API
+# directly and fails loudly if the deploy does not reach `live`.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: render-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SERVICE_ID: srv-d7an362dbo4c73a5njt0
+      BASE_URL: https://msouwout-backend.onrender.com
+
+    steps:
+      - name: Guard against a missing key
+        run: |
+          [ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }
+
+      - name: Trigger deploy
+        id: trigger
+        run: |
+          set -euo pipefail
+          resp="$(curl -sS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+            -d '{"clearCache":"do_not_clear"}')"
+          id="$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          echo "Triggered deploy $id"
+          echo "deploy_id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the deploy to go live
+        run: |
+          set -euo pipefail
+          id="${{ steps.trigger.outputs.deploy_id }}"
+          for i in $(seq 1 60); do
+            status="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys/$id" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+            echo "[$i] $status"
+            case "$status" in
+              live) exit 0 ;;
+              build_failed|update_failed|canceled|pre_deploy_failed)
+                echo "Deploy finished as: $status"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Deploy did not reach 'live' within 15 minutes"; exit 1
+
+      # "Deploy succeeded" and "the API works" are different claims. Check the
+      # second one, and check the database, because a healthy process talking to
+      # a dead database still answers on the port.
+      - name: Verify the API actually serves
+        run: |
+          set -euo pipefail
+          health="$(curl -sS --retry 5 --retry-delay 10 --retry-all-errors -m 60 "$BASE_URL/api/health")"
+          echo "$health"
+          printf '%s' "$health" | python3 -c '
+          import json, sys
+          h = json.load(sys.stdin)
+          if h.get("status") != "ok":
+              sys.exit(f"health status is {h.get(\"status\")!r}, not ok: {h}")
+          if not h.get("db"):
+              sys.exit(f"the database is not connected: {h}")
+          print("health ok, database connected")
+          '
+          code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$BASE_URL/api/businesses")"
+          echo "/api/businesses -> $code"
+          [ "$code" = "200" ] || { echo "/api/businesses did not return 200"; exit 1; }
