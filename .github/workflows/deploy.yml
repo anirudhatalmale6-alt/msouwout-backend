@@ -76,10 +76,11 @@ jobs:
           printf '%s' "$health" | python3 -c '
           import json, sys
           h = json.load(sys.stdin)
-          if h.get("status") != "ok":
-              sys.exit(f"health status is {h.get(\"status\")!r}, not ok: {h}")
+          status = h.get("status")
+          if status != "ok":
+              sys.exit("health status is %r, not ok: %s" % (status, h))
           if not h.get("db"):
-              sys.exit(f"the database is not connected: {h}")
+              sys.exit("the database is not connected: %s" % (h,))
           print("health ok, database connected")
           '
           code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$BASE_URL/api/businesses")"
