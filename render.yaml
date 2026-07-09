@@ -1,17 +1,23 @@
 databases:
+  # Not `free`: Render deletes free Postgres 30 days after creation. The original
+  # msouwout-db was created 2026-04-07 and silently deleted a month later, which
+  # took the backend down until 2026-07-09.
   - name: msouwout-db
-    plan: free
+    plan: basic_256mb
     databaseName: msouwout
     postgresMajorVersion: "16"
     ipAllowList: []
 
 services:
+  # Not `free`: free web services sleep after 15 minutes idle and cold-start for
+  # ~50s, which reads as an outage to anyone opening the app.
   - type: web
-    plan: free
+    plan: starter
     name: msouwout-backend
     runtime: node
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
