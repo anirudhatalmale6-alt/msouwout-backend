@@ -2,6 +2,25 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('./pool');
 
+// App Store and Play reviewers log in with the demo phone 0000 0000. If those rows
+// are missing the reviewer cannot get into the app and the submission is rejected,
+// which is what happened to iOS 1.0 (7) on 2026-07-07. Re-seeding on every boot
+// means a wiped or recreated database still comes up reviewable.
+//
+// A failure here must not take the API down — a live app with a broken demo login
+// beats no app at all — so this logs loudly instead of throwing. The deploy
+// workflow is what actually fails the release: it asserts the demo login returns
+// 200 before the deploy is allowed to go green.
+async function seedDemoAccounts(client) {
+  try {
+    const demo = fs.readFileSync(path.join(__dirname, 'seed-demo.sql'), 'utf8');
+    await client.query(demo);
+    console.log('Demo review accounts seeded.');
+  } catch (err) {
+    console.error('DEMO SEED FAILED — store review will be rejected:', err.message);
+  }
+}
+
 async function initDatabase(retries = 3) {
   let client;
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -22,9 +41,34 @@ async function initDatabase(retries = 3) {
       )
     `);
 
-    if (tableCheck.rows[0].exists) {
+    if (!tableCheck.rows[0].exists) {
+      console.log('Initializing database schema...');
+      const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+      await client.query(schema);
+      console.log('Schema created.');
+    } else {
       console.log('Database already initialized.');
-      // Run migrations for new tables
+    }
+
+    // Every statement in runMigrations is idempotent, but it used to run only when
+    // the database already existed. schema.sql never creates the logistics tables,
+    // so a freshly created database had no fleets/trucks/freight_loads until some
+    // later boot happened to take the other branch. Run them every time.
+    await runMigrations(client);
+
+    const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
+    await client.query(seed);
+    await seedDemoAccounts(client);
+    console.log('Zones synced. Database ready!');
+  } catch (err) {
+    console.error('Database init error:', err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function runMigrations(client) {
       await client.query(`
         CREATE TABLE IF NOT EXISTS ride_requests (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -358,27 +402,7 @@ async function initDatabase(retries = 3) {
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
-      const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
-      await client.query(seed);
-      console.log('Migrations applied (incl. DASH settlements, referral partners), zones synced.')
-      return;
-    }
-
-    console.log('Initializing database schema...');
-    const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-    await client.query(schema);
-    console.log('Schema created.');
-
-    console.log('Seeding initial zones...');
-    const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
-    await client.query(seed);
-    console.log('Zones seeded. Database ready!');
-  } catch (err) {
-    console.error('Database init error:', err.message);
-    throw err;
-  } finally {
-    client.release();
-  }
+      console.log('Migrations applied (incl. logistics, DASH settlements, referral partners).');
 }
 
 module.exports = { initDatabase };

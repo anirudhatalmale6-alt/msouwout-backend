@@ -86,3 +86,29 @@ jobs:
           code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$BASE_URL/api/businesses")"
           echo "/api/businesses -> $code"
           [ "$code" = "200" ] || { echo "/api/businesses did not return 200"; exit 1; }
+
+      # Apple rejected 1.0 (7) because the reviewer could not log in. The demo
+      # accounts live in the database, so they die with it. Prove a reviewer can
+      # still get in, or this release does not ship.
+      - name: Verify the store reviewer can still log in
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /tmp/login.json -w '%{http_code}' -m 60 -X POST "$BASE_URL/api/drivers/login" \
+            -H 'Content-Type: application/json' -d '{"phone":"+50900000000","pin":"0000"}')"
+          echo "driver demo login -> $code"
+          cat /tmp/login.json
+          [ "$code" = "200" ] || { echo "The demo driver account is gone. App Store review would be rejected under Guideline 2.1(a)."; exit 1; }
+
+          curl -sS -m 60 -X POST "$BASE_URL/api/rides/history" \
+            -H 'Content-Type: application/json' -d '{"phone":"+50900000000"}' \
+            | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          if not d.get("total_rides"):
+              sys.exit("the demo customer has no ride history, so the customer dashboard will refuse to open: %s" % (d,))
+          print("demo customer has %d rides" % d["total_rides"])
+          '
+
+          code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$BASE_URL/api/logistics/loads/MW-DEMO/track")"
+          echo "MW-DEMO tracking -> $code"
+          [ "$code" = "200" ] || { echo "The MW-DEMO shipment is missing; the tracking screen the reviewer tests is empty."; exit 1; }
