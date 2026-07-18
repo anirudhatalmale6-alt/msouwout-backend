@@ -7,7 +7,7 @@ router.post('/', async (req, res) => {
   try {
     const { full_name, phone, email, vehicle_type, license_plate,
             license_number, preferred_zones, preferred_service,
-            referral_partner, referral_code, syndicate } = req.body;
+            referral_partner, referral_code, syndicate, vehicle_year } = req.body;
 
     if (!full_name || !phone || !vehicle_type) {
       return res.status(400).json({ error: 'full_name, phone, and vehicle_type are required' });
@@ -19,18 +19,20 @@ router.post('/', async (req, res) => {
       return res.status(409).json({ error: 'A driver with this phone number already exists' });
     }
 
+    const yearInt = parseInt(vehicle_year, 10);
+
     const result = await pool.query(`
       INSERT INTO drivers (full_name, phone, email, vehicle_type, license_plate,
                           license_number, preferred_zones, preferred_service,
-                          referral_partner, referral_code, syndicate, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+                          referral_partner, referral_code, syndicate, vehicle_year, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
       RETURNING id, full_name, phone, vehicle_type, status, created_at
     `, [
       full_name, phone, email || null, vehicle_type,
       license_plate || null, license_number || null,
       preferred_zones || null, preferred_service || 'both',
       referral_partner || null, referral_code || null,
-      syndicate || null
+      syndicate || null, Number.isFinite(yearInt) ? yearInt : null
     ]);
 
     res.status(201).json({

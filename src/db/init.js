@@ -406,6 +406,8 @@ async function runMigrations(client) {
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_partner VARCHAR(50);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS syndicate VARCHAR(50);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS preferred_zones TEXT;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_year INTEGER;
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
