@@ -17,15 +17,19 @@ router.get('/', async (req, res) => {
 router.get('/surge', async (req, res) => {
   try {
     const config = await getPricingConfig();
-    const surge = await getDynamicSurge(config);
+    const rideType = (req.query.ride_type || 'moto').toLowerCase();
+    const surge = await getDynamicSurge(config, rideType);
     res.json({
       dynamic_pricing: config.dynamic_pricing,
+      ride_type: rideType === 'car' ? 'car' : 'moto',
       multiplier: surge.multiplier,
+      surge_pct: surge.pct,
+      surge_type: surge.type,
       factors: surge.factors,
       hour: surge.hour,
       active_rides: surge.active_rides,
       raining: surge.raining,
-      max_surge: config.max_surge
+      max_surge_pct: config.max_surge_pct
     });
   } catch (err) {
     console.error('Surge check error:', err);

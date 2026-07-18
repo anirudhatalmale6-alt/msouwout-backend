@@ -58,6 +58,11 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'admin.html'));
 });
 
+// Money & payouts dashboard (gated client-side by the admin code)
+app.get('/money', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'money.html'));
+});
+
 let dbReady = false;
 let dbError = null;
 

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>MsouWout — Money & Payouts</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--blue:#00209F;--red:#D21034;--green:#16A34A;--amber:#D4A017;--ink:#141726;--muted:#6B7280;--line:#E7EAF0;--bg:#F5F7FB;--card:#fff}
+body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:20px 16px 60px}
+.top{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.top .dot{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--blue),#0031e0);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:.95rem}
+.top h1{font-size:1.15rem;font-weight:800}
+.sub{color:var(--muted);font-size:.82rem;margin:2px 0 18px 44px}
+.gate{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;text-align:center;box-shadow:0 1px 3px rgba(20,23,38,.05)}
+.gate input{width:100%;max-width:280px;padding:11px 14px;border:1.5px solid var(--line);border-radius:10px;font-size:.9rem;font-family:inherit;margin:12px 0}
+.gate input:focus{outline:none;border-color:var(--blue)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 22px;border-radius:100px;font-size:.88rem;font-weight:700;cursor:pointer;border:none;font-family:inherit;background:var(--blue);color:#fff;transition:opacity .15s}
+.btn:hover{opacity:.9}
+.btn.ghost{background:transparent;color:var(--blue);border:1.5px solid var(--line)}
+.hidden{display:none}
+.window-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.window-bar .pill{background:#EAF0FF;color:var(--blue);font-weight:700;font-size:.76rem;padding:6px 12px;border-radius:100px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 1px 3px rgba(20,23,38,.05);position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px}
+.kpi.driver::before{background:var(--green)}
+.kpi.dash::before{background:var(--red)}
+.kpi.us::before{background:var(--blue)}
+.kpi.collected::before{background:var(--amber)}
+.kpi .label{font-size:.74rem;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.kpi .val{font-size:1.5rem;font-weight:800;margin-top:6px;letter-spacing:-.02em}
+.kpi .val small{font-size:.85rem;font-weight:700;color:var(--muted)}
+.kpi .note{font-size:.72rem;color:var(--muted);margin-top:3px}
+.row2{display:flex;gap:12px;margin-top:12px}
+.mini{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.mini .label{font-size:.72rem;color:var(--muted);font-weight:600}
+.mini .val{font-size:1.05rem;font-weight:800;margin-top:2px}
+h2{font-size:.95rem;font-weight:800;margin:26px 0 10px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:.82rem}
+th,td{padding:10px 12px;text-align:right}
+th:first-child,td:first-child{text-align:left}
+thead th{background:#F0F3FA;color:var(--muted);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.03em}
+tbody tr{border-top:1px solid var(--line)}
+.empty{color:var(--muted);font-size:.82rem;text-align:center;padding:16px}
+.err{color:var(--red);font-size:.82rem;margin-top:10px}
+.foot{color:var(--muted);font-size:.72rem;margin-top:24px;line-height:1.5}
+.refresh{color:var(--blue);font-size:.8rem;font-weight:700;cursor:pointer;background:none;border:none;font-family:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><div class="dot">MW</div><h1>Money &amp; Payouts</h1></div>
+  <div class="sub">Every completed ride splits three ways — driver, DASH fund, MsouWout.</div>
+
+  <div id="gate" class="gate">
+    <div style="font-weight:700">Enter admin code to view</div>
+    <input id="secret" type="password" placeholder="Admin code" autocomplete="off">
+    <div><button class="btn" onclick="unlock()">View report</button></div>
+    <div id="gateErr" class="err"></div>
+  </div>
+
+  <div id="dash" class="hidden">
+    <div class="window-bar">
+      <span class="pill" id="windowLabel">Last 24 hours</span>
+      <div>
+        <button class="refresh" onclick="load()">↻ Refresh</button>
+        <button class="refresh" style="color:var(--muted);margin-left:10px" onclick="lock()">Lock</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="kpi driver"><div class="label">Driver payouts</div><div class="val" id="kDriver">—</div><div class="note">Due to drivers within 24h</div></div>
+      <div class="kpi dash"><div class="label">DASH fund</div><div class="val" id="kDash">—</div><div class="note">Medical protection pool</div></div>
+      <div class="kpi us"><div class="label">MsouWout revenue</div><div class="val" id="kUs">—</div><div class="note">Commission + DASH share</div></div>
+      <div class="kpi collected"><div class="label">Rider collected</div><div class="val" id="kCollected">—</div><div class="note">Fares + DASH from riders</div></div>
+    </div>
+
+    <div class="row2">
+      <div class="mini"><div class="label">Completed rides</div><div class="val" id="mRides">—</div></div>
+      <div class="mini"><div class="label">Cancelled</div><div class="val" id="mCancel">—</div></div>
+      <div class="mini"><div class="label">Cancel fees</div><div class="val" id="mCancelFee">—</div></div>
+    </div>
+
+    <h2>Last 7 days</h2>
+    <table>
+      <thead><tr><th>Day</th><th>Rides</th><th>Driver</th><th>DASH</th><th>MsouWout</th></tr></thead>
+      <tbody id="dailyBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+
+    <div id="dashErr" class="err"></div>
+    <div class="foot">
+      Amounts in HTG. Split per ride: fare 80% driver / 20% MsouWout; DASH 25 (12.50 rider + 12.50 driver) splits 20 to the DASH fund / 5 to MsouWout. Cancellations are free before pickup; after the grace window a small cancel fee goes to the driver. DASH is never charged on a cancelled ride.
+    </div>
+  </div>
+</div>
+
+<script>
+var KEY='msw_admin_secret';
+function fmt(n){return (Math.round(n||0)).toLocaleString('en-US');}
+function unlock(){
+  var s=document.getElementById('secret').value.trim();
+  if(!s){document.getElementById('gateErr').textContent='Enter the admin code.';return;}
+  localStorage.setItem(KEY,s);load();
+}
+function lock(){localStorage.removeItem(KEY);document.getElementById('dash').classList.add('hidden');document.getElementById('gate').classList.remove('hidden');document.getElementById('secret').value='';}
+function load(){
+  var s=localStorage.getItem(KEY);
+  if(!s){document.getElementById('dash').classList.add('hidden');document.getElementById('gate').classList.remove('hidden');return;}
+  fetch('/api/rides/reports/money',{headers:{'x-admin-secret':s}}).then(function(r){
+    if(r.status===401){throw new Error('Wrong admin code.');}
+    if(!r.ok){throw new Error('Could not load report.');}
+    return r.json();
+  }).then(function(d){
+    document.getElementById('gate').classList.add('hidden');
+    document.getElementById('dash').classList.remove('hidden');
+    document.getElementById('gateErr').textContent='';
+    document.getElementById('dashErr').textContent='';
+    var s=d.summary;
+    document.getElementById('kDriver').innerHTML=fmt(s.driver_payouts)+' <small>HTG</small>';
+    document.getElementById('kDash').innerHTML=fmt(s.dash_fund)+' <small>HTG</small>';
+    document.getElementById('kUs').innerHTML=fmt(s.msouwout_revenue)+' <small>HTG</small>';
+    document.getElementById('kCollected').innerHTML=fmt(s.rider_collected)+' <small>HTG</small>';
+    document.getElementById('mRides').textContent=fmt(s.rides);
+    document.getElementById('mCancel').textContent=fmt(s.cancelled);
+    document.getElementById('mCancelFee').textContent=fmt(s.cancel_fees)+' HTG';
+    var tb=document.getElementById('dailyBody');
+    if(d.daily&&d.daily.length){
+      tb.innerHTML=d.daily.map(function(x){
+        return '<tr><td>'+x.day+'</td><td>'+fmt(x.rides)+'</td><td>'+fmt(x.driver_payouts)+'</td><td>'+fmt(x.dash_fund)+'</td><td>'+fmt(x.msouwout_revenue)+'</td></tr>';
+      }).join('');
+    } else {
+      tb.innerHTML='<tr><td colspan="5" class="empty">No completed rides yet in the last 7 days.</td></tr>';
+    }
+  }).catch(function(e){
+    if(document.getElementById('dash').classList.contains('hidden')){
+      document.getElementById('gateErr').textContent=e.message;
+    } else {
+      document.getElementById('dashErr').textContent=e.message;
+    }
+  });
+}
+if(localStorage.getItem(KEY)){load();}
+document.getElementById('secret').addEventListener('keydown',function(e){if(e.key==='Enter')unlock();});
+</script>
+</body>
+</html>

@@ -55,15 +55,19 @@ router.post('/calculate', async (req, res) => {
     }
 
     const estimate = await pricing.calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideType);
-    // Include DASH protection fee in estimate
-    const med = pricing.calculateMedicalFee(estimate.price);
+    // DASH Protection — flat 25 HTG pot (12.50 rider + 12.50 driver), split 20 fund / 5 MsouWout.
+    const cfg = await pricing.getPricingConfig();
+    const med = pricing.calculateMedicalFee(estimate.price, cfg);
     estimate.medical_protection = {
-      fee: med.medical_fee,
-      dash_share: med.dash_fee,
-      msouwout_share: med.msouwout_medical_fee,
-      rate: '5%'
+      fee: med.medical_fee,           // 25 — full pot
+      rider_share: med.rider_share,   // 12.5 — what the rider pays on top
+      driver_share: med.driver_share, // 12.5 — deducted from the driver
+      dash_share: med.dash_fee,       // 20 — to DASH fund
+      msouwout_share: med.msouwout_medical_fee, // 5 — MsouWout cut
+      flat: true
     };
-    estimate.total_with_protection = estimate.price + med.medical_fee;
+    // The rider only pays their 12.50 half on top of the fare.
+    estimate.total_with_protection = Math.round(estimate.price + med.rider_share);
     res.json(estimate);
   } catch (err) {
     console.error('Calculate ride error:', err);
@@ -105,12 +109,14 @@ router.post('/request', async (req, res) => {
     const config = await pricing.getPricingConfig();
     const commission = pricing.calculateCommission(finalPrice, config);
 
-    // DASH Protection & Medical Assistance — MANDATORY on every ride
+    // DASH Protection & Medical Assistance — MANDATORY on every ride.
+    // Flat 25 HTG pot (12.50 rider + 12.50 driver), split 20 to DASH fund / 5 to MsouWout.
     const wantsMedical = true;
-    const med = pricing.calculateMedicalFee(finalPrice);
-    const medicalFee = med.medical_fee;
-    const dashFee = med.dash_fee;
-    const msouwoutMedicalFee = med.msouwout_medical_fee;
+    const med = pricing.calculateMedicalFee(finalPrice, config);
+    const medicalFee = med.medical_fee;            // 25 — full pot
+    const dashFee = med.dash_fee;                  // 20 — DASH fund
+    const msouwoutMedicalFee = med.msouwout_medical_fee; // 5 — MsouWout cut
+    const driverDashShare = med.driver_share;      // 12.5 — deducted from driver at payout
 
     // Delegation validation
     const delegated = is_delegated === true;
@@ -122,24 +128,25 @@ router.post('/request', async (req, res) => {
     const trackingCode = 'MW-' + Date.now().toString(36).toUpperCase().slice(-6);
     const ridePin = String(Math.floor(1000 + Math.random() * 9000));
 
-    const totalWithProtection = finalPrice + medicalFee;
+    // Rider pays the fare plus only their 12.50 DASH half.
+    const totalWithProtection = Math.round(finalPrice + med.rider_share);
 
     await pool.query(
       `INSERT INTO ride_requests
        (id, customer_name, customer_phone, user_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
         ride_type, distance_km, duration_min, price, platform_fee, driver_earning,
         payment_method, tracking_code, ride_pin, status,
-        medical_protection, medical_fee, dash_fee, msouwout_medical_fee, total_with_protection,
+        medical_protection, medical_fee, dash_fee, msouwout_medical_fee, driver_dash_share, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
         created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())`,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
        commission.platform_fee, commission.driver_earning,
        payment_method || 'cash', trackingCode, ridePin,
-       wantsMedical, medicalFee, dashFee, msouwoutMedicalFee, totalWithProtection,
+       wantsMedical, medicalFee, dashFee, msouwoutMedicalFee, driverDashShare, totalWithProtection,
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
        delegated ? passenger_name : null, delegated ? passenger_phone : null]
@@ -163,7 +170,8 @@ router.post('/request', async (req, res) => {
     response.medical_fee = medicalFee;
     response.dash_fee = dashFee;
     response.msouwout_medical_fee = msouwoutMedicalFee;
-    response.total_with_protection = finalPrice + medicalFee;
+    response.driver_dash_share = driverDashShare;
+    response.total_with_protection = totalWithProtection;
 
     if (delegated) {
       response.is_delegated = true;
@@ -209,6 +217,82 @@ router.post('/history', async (req, res) => {
   } catch (err) {
     console.error('Ride history error:', err);
     res.status(500).json({ error: 'Failed to fetch history' });
+  }
+});
+
+// GET /api/rides/reports/money — Money split & settlement report (admin)
+// Every completed ride contributes three lines: driver payout, DASH fund, MsouWout revenue.
+// Defaults to the last 24 hours (the payout/settlement window) plus a 7-day daily series.
+router.get('/reports/money', async (req, res) => {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      const secret = req.headers['x-admin-secret'] || req.query.secret;
+      if (secret !== process.env.ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const to = req.query.to ? new Date(req.query.to) : new Date();
+    const from = req.query.from ? new Date(req.query.from) : new Date(to.getTime() - 24 * 60 * 60 * 1000);
+
+    // Completed rides in the window — the money that must settle.
+    const completed = await pool.query(
+      `SELECT
+         COUNT(*)                                                   AS rides,
+         COALESCE(SUM(price),0)                                     AS gross_fares,
+         COALESCE(SUM(driver_earning - COALESCE(driver_dash_share,0)),0) AS driver_payouts,
+         COALESCE(SUM(dash_fee),0)                                  AS dash_fund,
+         COALESCE(SUM(platform_fee + COALESCE(msouwout_medical_fee,0)),0) AS msouwout_revenue,
+         COALESCE(SUM(total_with_protection),0)                     AS rider_collected
+       FROM ride_requests
+       WHERE status = 'completed' AND completed_at >= $1 AND completed_at <= $2`,
+      [from.toISOString(), to.toISOString()]
+    );
+
+    // Cancellation fees in the window — paid to drivers, no DASH.
+    const cancels = await pool.query(
+      `SELECT COUNT(*) AS cancelled, COALESCE(SUM(COALESCE(cancel_fee,0)),0) AS cancel_fees
+       FROM ride_requests
+       WHERE status = 'cancelled' AND updated_at >= $1 AND updated_at <= $2`,
+      [from.toISOString(), to.toISOString()]
+    );
+
+    // 7-day daily series for the trend view.
+    const daily = await pool.query(
+      `SELECT
+         to_char(date_trunc('day', completed_at), 'YYYY-MM-DD') AS day,
+         COUNT(*)                                               AS rides,
+         COALESCE(SUM(driver_earning - COALESCE(driver_dash_share,0)),0) AS driver_payouts,
+         COALESCE(SUM(dash_fee),0)                              AS dash_fund,
+         COALESCE(SUM(platform_fee + COALESCE(msouwout_medical_fee,0)),0) AS msouwout_revenue
+       FROM ride_requests
+       WHERE status = 'completed' AND completed_at >= NOW() - INTERVAL '7 days'
+       GROUP BY 1 ORDER BY 1 DESC`
+    );
+
+    const c = completed.rows[0];
+    res.json({
+      window: { from: from.toISOString(), to: to.toISOString(), hours: 24 },
+      summary: {
+        rides: parseInt(c.rides) || 0,
+        gross_fares: Math.round(Number(c.gross_fares)),
+        driver_payouts: Math.round(Number(c.driver_payouts)),   // due to drivers within 24h
+        dash_fund: Math.round(Number(c.dash_fund)),             // due to DASH medical fund within 24h
+        msouwout_revenue: Math.round(Number(c.msouwout_revenue)),
+        rider_collected: Math.round(Number(c.rider_collected)),
+        cancelled: parseInt(cancels.rows[0].cancelled) || 0,
+        cancel_fees: Math.round(Number(cancels.rows[0].cancel_fees))
+      },
+      daily: daily.rows.map(d => ({
+        day: d.day,
+        rides: parseInt(d.rides) || 0,
+        driver_payouts: Math.round(Number(d.driver_payouts)),
+        dash_fund: Math.round(Number(d.dash_fund)),
+        msouwout_revenue: Math.round(Number(d.msouwout_revenue))
+      })),
+      currency: 'HTG'
+    });
+  } catch (err) {
+    console.error('Money report error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
   }
 });
 
@@ -276,7 +360,7 @@ router.patch('/:id/accept', async (req, res) => {
     if (driver.rows.length === 0) return res.status(404).json({ error: 'Chofè pa jwenn oswa pa apwouve' });
 
     await pool.query(
-      `UPDATE ride_requests SET driver_id = $1, status = 'accepted', updated_at = NOW() WHERE id = $2`,
+      `UPDATE ride_requests SET driver_id = $1, status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE id = $2`,
       [driver_id, req.params.id]
     );
 
@@ -341,11 +425,20 @@ router.patch('/:id/complete', async (req, res) => {
       [req.params.id]
     );
 
+    const r = ride.rows[0];
+    const driverDash = Number(r.driver_dash_share) || 0;
+    const driverNet = Math.round((Number(r.driver_earning) || 0) - driverDash);        // 80% fare − 12.50
+    const msouwoutRevenue = (Number(r.platform_fee) || 0) + (Number(r.msouwout_medical_fee) || 0); // 20% fare + 5
+
     res.json({
       status: 'completed',
-      price: ride.rows[0].price,
-      platform_fee: ride.rows[0].platform_fee,
-      driver_earning: ride.rows[0].driver_earning,
+      price: r.price,
+      platform_fee: r.platform_fee,
+      driver_earning: r.driver_earning,
+      // 3-way split, recorded on every completed ride
+      driver_net: driverNet,          // paid to driver
+      dash_fund: r.dash_fee,          // 20 → DASH medical fund
+      msouwout_revenue: msouwoutRevenue, // 20% fare + 5
       message: 'Kous fini! Mèsi.'
     });
   } catch (err) {
@@ -355,20 +448,55 @@ router.patch('/:id/complete', async (req, res) => {
 });
 
 // PATCH /api/rides/:id/cancel — Cancel ride
+//
+// Cancellation policy (confirmed with Jeffery 2026-07-18):
+//   • Rider cancels before a driver accepts → FREE, no charge, no DASH.
+//   • Rider cancels within the grace window after accept → FREE.
+//   • Rider cancels after the grace window / once the driver is on the way →
+//       cancel fee (default 50 HTG) charged to the rider, paid to the driver. No DASH.
+//   • Driver cancels → rider pays nothing, no DASH (repeat driver cancels are flagged).
+//   • DASH's 25 HTG is only ever charged on COMPLETED rides, never a cancellation.
 router.patch('/:id/cancel', async (req, res) => {
   try {
     const { reason } = req.body;
+    const cancelledBy = (req.body.cancelled_by || 'rider').toLowerCase() === 'driver' ? 'driver' : 'rider';
     const ride = await pool.query('SELECT * FROM ride_requests WHERE id = $1', [req.params.id]);
     if (ride.rows.length === 0) return res.status(404).json({ error: 'Kous pa jwenn' });
-    if (['completed', 'cancelled'].includes(ride.rows[0].status)) {
+    const r = ride.rows[0];
+    if (['completed', 'cancelled'].includes(r.status)) {
       return res.status(400).json({ error: 'Pa ka anile kous sa' });
     }
 
+    const config = await pricing.getPricingConfig();
+    let cancelFee = 0;
+
+    // A fee only applies when the RIDER cancels after a driver has already committed
+    // and the free grace window has elapsed.
+    if (cancelledBy === 'rider' && ['accepted', 'in_progress'].includes(r.status)) {
+      const acceptedAt = r.accepted_at ? new Date(r.accepted_at).getTime() : null;
+      const elapsedSec = acceptedAt ? (Date.now() - acceptedAt) / 1000 : Infinity;
+      if (r.status === 'in_progress' || elapsedSec > (config.cancel_grace_sec || 120)) {
+        cancelFee = config.cancel_fee || 0;
+      }
+    }
+
     await pool.query(
-      `UPDATE ride_requests SET status = 'cancelled', cancel_reason = $1, updated_at = NOW() WHERE id = $2`,
-      [reason || null, req.params.id]
+      `UPDATE ride_requests
+         SET status = 'cancelled', cancel_reason = $1, cancelled_by = $2,
+             cancel_fee = $3, updated_at = NOW()
+       WHERE id = $4`,
+      [reason || null, cancelledBy, cancelFee, req.params.id]
     );
-    res.json({ status: 'cancelled', message: 'Kous anile' });
+
+    res.json({
+      status: 'cancelled',
+      cancelled_by: cancelledBy,
+      cancel_fee: cancelFee,               // 0 = free; else charged to rider, paid to driver
+      dash_charged: false,                 // DASH is never charged on a cancellation
+      message: cancelFee > 0
+        ? `Kous anile. Frè anilasyon: ${cancelFee} HTG (pou chofè a).`
+        : 'Kous anile. Pa gen frè.'
+    });
   } catch (err) {
     console.error('Cancel ride error:', err);
     res.status(500).json({ error: 'Erè sèvè' });

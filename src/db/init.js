@@ -317,6 +317,13 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS passenger_name VARCHAR(255);
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS passenger_phone VARCHAR(50);
       `);
+      // Money split, payout & cancellation tracking (confirmed 2026-07-18)
+      await client.query(`
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS driver_dash_share NUMERIC(10,2) NOT NULL DEFAULT 0;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(20);
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS cancel_fee INTEGER NOT NULL DEFAULT 0;
+      `);
       await client.query(`
         CREATE TABLE IF NOT EXISTS medical_claims (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
