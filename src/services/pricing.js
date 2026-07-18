@@ -9,7 +9,7 @@ const pool = require('../db/pool');
 // Only ONE surge applies at a time — the highest applicable, never stacked.
 const DEFAULT_CONFIG = {
   // Base + per-km + minimum, per vehicle
-  base_fare_moto: 150,
+  base_fare_moto: 175,
   base_fare_car: 200,
   price_per_km_moto: 40,
   price_per_km_car: 60,
