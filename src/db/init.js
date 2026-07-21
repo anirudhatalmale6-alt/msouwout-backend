@@ -411,7 +411,38 @@ async function runMigrations(client) {
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
-      console.log('Migrations applied (incl. logistics, DASH settlements, referral partners).');
+      // Driver onboarding v2: full application fields + in-database document storage
+      // + an admin password so the review dashboard works WITHOUT the Render-generated
+      // ADMIN_SECRET (which is unreadable from outside the Render dashboard).
+      await client.query(`
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(50);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS city VARCHAR(120);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_make VARCHAR(100);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(100);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_color VARCHAR(50);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_number VARCHAR(100);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_expiry DATE;
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS driver_documents (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          driver_id UUID NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+          doc_type VARCHAR(40) NOT NULL,
+          mime VARCHAR(60) NOT NULL DEFAULT 'image/jpeg',
+          image_data TEXT NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          UNIQUE(driver_id, doc_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_driver_documents_driver ON driver_documents (driver_id);
+      `);
+      // Default admin password for the driver-review dashboard. Jeffery can change it
+      // later; seeded once and never overwritten.
+      await client.query(`
+        INSERT INTO service_config (key, value)
+        VALUES ('admin_auth', '{"password":"MsouWout2026"}'::jsonb)
+        ON CONFLICT (key) DO NOTHING;
+      `);
+      console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2).');
 }
 
 module.exports = { initDatabase };

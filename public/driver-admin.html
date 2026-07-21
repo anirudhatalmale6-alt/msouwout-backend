@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MsouWout — Driver Review</title>
+<style>
+  :root{ --navy:#00209F; --navy-d:#001873; --red:#D21034; --ink:#0e1526;
+         --muted:#5b6a86; --line:#e4e9f2; --bg:#f4f6fb; --ok:#128a4a; --okbg:#e6f6ee;
+         --warn:#b7791f; --warnbg:#fdf3e0; --rejbg:#fdeaea; }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--ink);}
+  .topbar{background:var(--navy);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;
+    position:sticky;top:0;z-index:10;box-shadow:0 2px 10px rgba(0,0,0,.12);}
+  .topbar .logo{font-weight:800;font-size:19px;letter-spacing:.2px;}
+  .topbar .logo span{color:#ffd23f;}
+  .topbar .sub{font-size:12px;opacity:.85;font-weight:600;}
+  .topbar .spacer{flex:1;}
+  .topbar button{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.35);
+    border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:700;cursor:pointer;}
+  .wrap{max-width:920px;margin:0 auto;padding:16px;}
+
+  /* login */
+  .login{max-width:380px;margin:12vh auto;background:#fff;border-radius:16px;padding:30px 26px;
+    box-shadow:0 12px 40px rgba(0,33,159,.12);text-align:center;}
+  .login h1{font-size:20px;margin-bottom:6px;}
+  .login p{color:var(--muted);font-size:13.5px;margin-bottom:20px;}
+  .login input{width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:10px;font-size:15px;margin-bottom:12px;}
+  .login input:focus{outline:none;border-color:var(--navy);}
+  .btn-primary{width:100%;background:var(--navy);color:#fff;border:none;border-radius:10px;padding:13px;
+    font-size:15px;font-weight:700;cursor:pointer;}
+  .btn-primary:active{transform:scale(.98);}
+  .err{color:var(--red);font-size:13px;margin-top:8px;min-height:18px;}
+
+  /* tabs */
+  .tabs{display:flex;gap:8px;overflow-x:auto;padding:14px 0 4px;}
+  .tab{white-space:nowrap;background:#fff;border:1.5px solid var(--line);border-radius:22px;
+    padding:9px 16px;font-size:13.5px;font-weight:700;color:var(--muted);cursor:pointer;}
+  .tab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+  .tab .cnt{display:inline-block;margin-left:6px;background:rgba(0,0,0,.08);border-radius:10px;
+    padding:1px 7px;font-size:11.5px;}
+  .tab.active .cnt{background:rgba(255,255,255,.25);}
+
+  /* list */
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:15px 16px;margin-bottom:11px;
+    cursor:pointer;transition:.12s;display:flex;align-items:center;gap:13px;}
+  .card:hover{box-shadow:0 6px 18px rgba(0,33,159,.10);transform:translateY(-1px);}
+  .avatar{width:44px;height:44px;border-radius:50%;background:var(--navy);color:#fff;display:flex;
+    align-items:center;justify-content:center;font-weight:800;font-size:16px;flex:0 0 auto;}
+  .card .nm{font-weight:700;font-size:15.5px;}
+  .card .meta{color:var(--muted);font-size:12.5px;margin-top:2px;}
+  .card .right{margin-left:auto;text-align:right;}
+  .pill{display:inline-block;font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px;text-transform:capitalize;}
+  .pill.pending{background:var(--warnbg);color:var(--warn);}
+  .pill.approved{background:var(--okbg);color:var(--ok);}
+  .pill.rejected{background:var(--rejbg);color:var(--red);}
+  .pill.suspended{background:#eee;color:#555;}
+  .docdot{font-size:11.5px;color:var(--muted);margin-top:5px;}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px;}
+  .loading{text-align:center;color:var(--muted);padding:40px;font-size:14px;}
+
+  /* detail modal */
+  .overlay{position:fixed;inset:0;background:rgba(10,20,40,.55);z-index:20;display:none;
+    align-items:flex-start;justify-content:center;overflow-y:auto;padding:20px 12px;}
+  .overlay.on{display:flex;}
+  .sheet{background:#fff;border-radius:16px;max-width:640px;width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+  .sheet-head{background:var(--navy);color:#fff;padding:18px 20px;position:relative;}
+  .sheet-head .nm{font-size:19px;font-weight:800;}
+  .sheet-head .ph{opacity:.9;font-size:13.5px;margin-top:3px;}
+  .sheet-head .close{position:absolute;top:14px;right:16px;font-size:24px;cursor:pointer;line-height:1;opacity:.85;}
+  .sheet-body{padding:18px 20px;}
+  .sec-title{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--navy);
+    margin:18px 0 10px;border-bottom:2px solid var(--line);padding-bottom:6px;}
+  .sec-title:first-child{margin-top:0;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:11px 18px;}
+  .fld .k{font-size:11.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em;}
+  .fld .v{font-size:15px;font-weight:600;margin-top:2px;word-break:break-word;}
+  .fld .v.empty-v{color:#b3bccd;font-weight:400;font-style:italic;}
+  .docs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .doc{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#f8fafd;text-align:center;}
+  .doc img{width:100%;height:96px;object-fit:cover;display:block;cursor:zoom-in;background:#eef2f8;}
+  .doc .lbl{font-size:11px;font-weight:700;padding:6px 4px;color:#33405c;}
+  .doc.missing{display:flex;flex-direction:column;align-items:center;justify-content:center;height:130px;color:#b3bccd;font-size:12px;}
+  .actions{display:flex;gap:10px;margin-top:22px;}
+  .actions button{flex:1;border:none;border-radius:11px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;}
+  .approve{background:var(--ok);color:#fff;}
+  .reject{background:#fff;color:var(--red);border:2px solid var(--red)!important;}
+  .actions button:active{transform:scale(.98);}
+  .reviewed-note{margin-top:18px;padding:12px 14px;border-radius:10px;font-size:13.5px;font-weight:600;}
+  .reviewed-note.approved{background:var(--okbg);color:var(--ok);}
+  .reviewed-note.rejected{background:var(--rejbg);color:var(--red);}
+
+  /* lightbox */
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:40;display:none;align-items:center;justify-content:center;padding:16px;}
+  .lightbox.on{display:flex;}
+  .lightbox img{max-width:100%;max-height:100%;border-radius:8px;}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);
+    color:#fff;padding:12px 22px;border-radius:24px;font-size:13.5px;font-weight:700;opacity:0;pointer-events:none;
+    transition:.3s;z-index:50;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginView">
+  <div class="login">
+    <h1>MsouWout Driver Review</h1>
+    <p>Enter your admin password to review and approve drivers.</p>
+    <input id="pass" type="password" placeholder="Admin password" autocomplete="current-password">
+    <button class="btn-primary" id="loginBtn">Log In</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="appView" style="display:none">
+  <div class="topbar">
+    <div class="logo">Msou<span>Wout</span></div>
+    <div class="sub">Driver Review</div>
+    <div class="spacer"></div>
+    <button id="refreshBtn">↻ Refresh</button>
+    <button id="logoutBtn">Log out</button>
+  </div>
+  <div class="wrap">
+    <div class="tabs" id="tabs"></div>
+    <div id="list"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- DETAIL -->
+<div class="overlay" id="overlay">
+  <div class="sheet" id="sheet"></div>
+</div>
+<div class="lightbox" id="lightbox"><img id="lightboxImg" alt=""></div>
+<div class="toast" id="toast"></div>
+
+<script>
+var API = '/api/drivers/admin';
+var pass = sessionStorage.getItem('mw_admin_pass') || '';
+var currentStatus = 'pending';
+var currentDriver = null;
+
+function h(sel){ return document.querySelector(sel); }
+function toast(msg){ var t=h('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},2200); }
+function initials(name){ return (name||'?').trim().split(/\s+/).slice(0,2).map(function(w){return w[0];}).join('').toUpperCase(); }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+
+function api(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({'Content-Type':'application/json','x-admin-pass':pass}, opts.headers||{});
+  return fetch(API + path, opts).then(function(r){
+    if(r.status===401){ logout(); throw new Error('unauth'); }
+    return r.json().then(function(d){ if(!r.ok) throw new Error(d.error||'error'); return d; });
+  });
+}
+
+/* ---------- login ---------- */
+h('#loginBtn').onclick = function(){
+  var v = h('#pass').value.trim();
+  if(!v){ h('#loginErr').textContent='Please enter the password.'; return; }
+  h('#loginBtn').textContent='Checking…'; h('#loginBtn').disabled=true;
+  fetch(API+'/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:v})})
+    .then(function(r){ return r.json().then(function(d){return {ok:r.ok,d:d};}); })
+    .then(function(res){
+      h('#loginBtn').textContent='Log In'; h('#loginBtn').disabled=false;
+      if(res.ok){ pass=v; sessionStorage.setItem('mw_admin_pass',v); showApp(); }
+      else { h('#loginErr').textContent = res.d.error || 'Wrong password.'; }
+    })
+    .catch(function(){ h('#loginBtn').textContent='Log In'; h('#loginBtn').disabled=false; h('#loginErr').textContent='Connection error.'; });
+};
+h('#pass').addEventListener('keydown',function(e){ if(e.key==='Enter') h('#loginBtn').click(); });
+
+function logout(){ pass=''; sessionStorage.removeItem('mw_admin_pass'); h('#appView').style.display='none'; h('#loginView').style.display='block'; }
+h('#logoutBtn').onclick = logout;
+h('#refreshBtn').onclick = function(){ loadCounts(); loadList(); };
+
+/* ---------- dashboard ---------- */
+function showApp(){
+  h('#loginView').style.display='none';
+  h('#appView').style.display='block';
+  loadCounts();
+  loadList();
+}
+
+var TABS = [['pending','Pending'],['approved','Approved'],['rejected','Rejected'],['all','All']];
+function renderTabs(counts){
+  h('#tabs').innerHTML = TABS.map(function(t){
+    var c = counts ? (counts[t[0]]||0) : 0;
+    return '<div class="tab'+(t[0]===currentStatus?' active':'')+'" data-s="'+t[0]+'">'+t[1]+
+      '<span class="cnt">'+c+'</span></div>';
+  }).join('');
+  Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(el){
+    el.onclick = function(){ currentStatus = el.getAttribute('data-s'); loadCounts(); loadList(); };
+  });
+}
+function loadCounts(){ api('/counts').then(renderTabs).catch(function(){}); }
+
+function loadList(){
+  h('#list').innerHTML = '<div class="loading">Loading…</div>';
+  api('/list?status='+currentStatus).then(function(rows){
+    if(!rows.length){ h('#list').innerHTML='<div class="empty">No '+currentStatus+' drivers.</div>'; return; }
+    h('#list').innerHTML = rows.map(function(d){
+      var veh = [d.vehicle_type, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' · ');
+      return '<div class="card" data-id="'+d.id+'">'+
+        '<div class="avatar">'+initials(d.full_name)+'</div>'+
+        '<div><div class="nm">'+esc(d.full_name)+'</div>'+
+          '<div class="meta">'+esc(d.phone)+(d.city?' · '+esc(d.city):'')+'</div>'+
+          '<div class="docdot">'+veh+' • '+(d.doc_count||0)+' document(s)</div></div>'+
+        '<div class="right"><span class="pill '+d.status+'">'+d.status+'</span></div></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('.card'),function(el){
+      el.onclick = function(){ openDriver(el.getAttribute('data-id')); };
+    });
+  }).catch(function(e){ if(e.message!=='unauth') h('#list').innerHTML='<div class="empty">Could not load.</div>'; });
+}
+
+/* ---------- detail ---------- */
+var DOC_LABELS = {selfie:'Selfie',id:'ID / Passport',license:'Driver License',oavct:'OAVCT',vehicle:'Vehicle',insurance:'Insurance'};
+var DOC_ORDER = ['selfie','id','license','oavct','vehicle','insurance'];
+
+function fld(k,v){ var empty=(v==null||v===''); return '<div class="fld"><div class="k">'+k+'</div><div class="v'+(empty?' empty-v':'')+'">'+(empty?'—':esc(v))+'</div></div>'; }
+
+function openDriver(id){
+  api('/'+id).then(function(res){
+    currentDriver = res.driver;
+    var d = res.driver;
+    var docMap = {}; res.documents.forEach(function(x){ docMap[x.doc_type]=x; });
+    var veh = [d.vehicle_make,d.vehicle_model,d.vehicle_year,d.vehicle_color].filter(Boolean).join(' ');
+    var expiry = d.oavct_expiry ? String(d.oavct_expiry).slice(0,10) : '';
+
+    var docsHtml = DOC_ORDER.map(function(t){
+      var doc = docMap[t];
+      if(doc){ return '<div class="doc"><img src="'+doc.data_url+'" data-full="'+doc.data_url+'" alt="'+t+'"><div class="lbl">'+DOC_LABELS[t]+'</div></div>'; }
+      return '<div class="doc missing">✕<div class="lbl" style="color:#b3bccd">'+DOC_LABELS[t]+'</div></div>';
+    }).join('');
+
+    var actions;
+    if(d.status==='pending'){
+      actions = '<div class="actions"><button class="reject" id="rejectBtn">Reject</button>'+
+                '<button class="approve" id="approveBtn">✓ Approve</button></div>';
+    } else if(d.status==='approved'){
+      actions = '<div class="reviewed-note approved">✓ Approved'+(d.reviewed_at?' on '+String(d.reviewed_at).slice(0,10):'')+
+                '</div><div class="actions"><button class="reject" id="rejectBtn">Reject</button></div>';
+    } else {
+      actions = '<div class="reviewed-note rejected">✕ Rejected'+(d.rejection_reason?' — '+esc(d.rejection_reason):'')+
+                '</div><div class="actions"><button class="approve" id="approveBtn">✓ Approve instead</button></div>';
+    }
+
+    h('#sheet').innerHTML =
+      '<div class="sheet-head"><span class="close" id="closeSheet">×</span>'+
+        '<div class="nm">'+esc(d.full_name)+'</div><div class="ph">'+esc(d.phone)+' · <span style="text-transform:capitalize">'+d.status+'</span></div></div>'+
+      '<div class="sheet-body">'+
+        '<div class="sec-title">Documents</div><div class="docs">'+docsHtml+'</div>'+
+        '<div class="sec-title">Contact</div><div class="grid">'+
+          fld('Phone',d.phone)+fld('WhatsApp',d.whatsapp)+fld('Email',d.email)+fld('City / Zone',d.city)+'</div>'+
+        '<div class="sec-title">Vehicle</div><div class="grid">'+
+          fld('Type',d.vehicle_type)+fld('Make / Model',[d.vehicle_make,d.vehicle_model].filter(Boolean).join(' '))+
+          fld('Year',d.vehicle_year)+fld('Color',d.vehicle_color)+fld('License Plate',d.license_plate)+'</div>'+
+        '<div class="sec-title">Documents & IDs</div><div class="grid">'+
+          fld('Driver License #',d.license_number)+fld('OAVCT #',d.oavct_number)+fld('OAVCT Expiry',expiry)+
+          fld('Referral Partner',d.referral_partner)+'</div>'+
+        actions +
+      '</div>';
+
+    h('#overlay').classList.add('on');
+    document.body.style.overflow='hidden';
+    h('#closeSheet').onclick = closeSheet;
+    Array.prototype.forEach.call(h('#sheet').querySelectorAll('.doc img'),function(img){
+      img.onclick = function(){ h('#lightboxImg').src=img.getAttribute('data-full'); h('#lightbox').classList.add('on'); };
+    });
+    var ab=h('#approveBtn'), rb=h('#rejectBtn');
+    if(ab) ab.onclick = function(){ decide('approve'); };
+    if(rb) rb.onclick = function(){
+      var reason = prompt('Reason for rejection (optional):','');
+      if(reason===null) return;
+      decide('reject', reason);
+    };
+  }).catch(function(e){ if(e.message!=='unauth') toast('Could not open driver.'); });
+}
+
+function decide(action, reason){
+  if(!currentDriver) return;
+  api('/'+currentDriver.id+'/'+action, {method:'POST', body: JSON.stringify(reason!==undefined?{reason:reason}:{})})
+    .then(function(){
+      toast(action==='approve'?'Driver approved ✓':'Driver rejected');
+      closeSheet(); loadCounts(); loadList();
+    }).catch(function(){ toast('Action failed.'); });
+}
+
+function closeSheet(){ h('#overlay').classList.remove('on'); document.body.style.overflow=''; currentDriver=null; }
+h('#overlay').addEventListener('click', function(e){ if(e.target===h('#overlay')) closeSheet(); });
+h('#lightbox').onclick = function(){ h('#lightbox').classList.remove('on'); };
+
+/* auto-login if we have a stored password */
+if(pass){ showApp(); } else { h('#loginView').style.display='block'; }
+</script>
+</body>
+</html>

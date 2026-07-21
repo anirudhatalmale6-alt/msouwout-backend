@@ -5,8 +5,9 @@ const router = express.Router();
 // POST /api/drivers - Register a new driver (public)
 router.post('/', async (req, res) => {
   try {
-    const { full_name, phone, email, vehicle_type, license_plate,
-            license_number, preferred_zones, preferred_service,
+    const { full_name, phone, email, whatsapp, city, vehicle_type, license_plate,
+            license_number, vehicle_make, vehicle_model, vehicle_color,
+            oavct_number, oavct_expiry, preferred_zones, preferred_service,
             referral_partner, referral_code, syndicate, vehicle_year } = req.body;
 
     if (!full_name || !phone || !vehicle_type) {
@@ -16,20 +17,24 @@ router.post('/', async (req, res) => {
     // Check for duplicate phone
     const existing = await pool.query('SELECT id FROM drivers WHERE phone = $1', [phone]);
     if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'A driver with this phone number already exists' });
+      return res.status(409).json({ error: 'A driver with this phone number already exists', code: 'duplicate_phone' });
     }
 
     const yearInt = parseInt(vehicle_year, 10);
+    const expiry = (oavct_expiry && /^\d{4}-\d{2}-\d{2}$/.test(oavct_expiry)) ? oavct_expiry : null;
 
     const result = await pool.query(`
-      INSERT INTO drivers (full_name, phone, email, vehicle_type, license_plate,
-                          license_number, preferred_zones, preferred_service,
+      INSERT INTO drivers (full_name, phone, email, whatsapp, city, vehicle_type, license_plate,
+                          license_number, vehicle_make, vehicle_model, vehicle_color,
+                          oavct_number, oavct_expiry, preferred_zones, preferred_service,
                           referral_partner, referral_code, syndicate, vehicle_year, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'pending')
       RETURNING id, full_name, phone, vehicle_type, status, created_at
     `, [
-      full_name, phone, email || null, vehicle_type,
+      full_name, phone, email || null, whatsapp || null, city || null, vehicle_type,
       license_plate || null, license_number || null,
+      vehicle_make || null, vehicle_model || null, vehicle_color || null,
+      oavct_number || null, expiry,
       preferred_zones || null, preferred_service || 'both',
       referral_partner || null, referral_code || null,
       syndicate || null, Number.isFinite(yearInt) ? yearInt : null
@@ -42,6 +47,166 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('Error registering driver:', err);
     res.status(500).json({ error: 'Failed to register driver' });
+  }
+});
+
+// POST /api/drivers/:id/documents - upload/replace one verification document (public,
+// used by the signup form). Body: { doc_type, image_data (base64 data URL or raw), mime }.
+// Stored in the database so it survives Render redeploys (the filesystem is ephemeral).
+const DOC_TYPES = ['selfie', 'id', 'license', 'oavct', 'vehicle', 'insurance'];
+router.post('/:id/documents', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let { doc_type, image_data, mime } = req.body;
+    if (!doc_type || !image_data) {
+      return res.status(400).json({ error: 'doc_type and image_data are required' });
+    }
+    doc_type = String(doc_type).toLowerCase();
+    if (!DOC_TYPES.includes(doc_type)) {
+      return res.status(400).json({ error: 'Invalid doc_type' });
+    }
+    // Accept a full data URL and split off the base64 payload + mime.
+    let b64 = image_data;
+    const m = /^data:([^;]+);base64,(.*)$/s.exec(image_data);
+    if (m) { mime = mime || m[1]; b64 = m[2]; }
+    mime = mime || 'image/jpeg';
+    // Guard against oversized uploads slipping past the client-side resize (~4MB base64).
+    if (b64.length > 4 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Image too large' });
+    }
+
+    const driver = await pool.query('SELECT id FROM drivers WHERE id = $1', [id]);
+    if (driver.rows.length === 0) {
+      return res.status(404).json({ error: 'Driver not found' });
+    }
+
+    await pool.query(`
+      INSERT INTO driver_documents (driver_id, doc_type, mime, image_data)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (driver_id, doc_type)
+      DO UPDATE SET mime = EXCLUDED.mime, image_data = EXCLUDED.image_data, created_at = NOW()
+    `, [id, doc_type, mime, b64]);
+
+    res.status(201).json({ saved: true, doc_type });
+  } catch (err) {
+    console.error('Document upload error:', err);
+    res.status(500).json({ error: 'Failed to save document' });
+  }
+});
+
+// ── Admin review dashboard ────────────────────────────────────────────────
+// Gated by a password stored in service_config('admin_auth'), NOT the Render
+// ADMIN_SECRET (which is unreadable). Password travels in the x-admin-pass header.
+async function checkAdminPass(pass) {
+  if (!pass) return false;
+  const r = await pool.query(`SELECT value FROM service_config WHERE key = 'admin_auth'`);
+  const stored = r.rows[0] && r.rows[0].value && r.rows[0].value.password;
+  return !!stored && pass === stored;
+}
+
+async function adminPass(req, res, next) {
+  try {
+    const pass = req.headers['x-admin-pass'] || (req.body || {}).admin_pass || req.query.pass;
+    if (!(await checkAdminPass(pass))) return res.status(401).json({ error: 'Unauthorized' });
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Auth check failed' });
+  }
+}
+
+// POST /api/drivers/admin/login
+router.post('/admin/login', async (req, res) => {
+  const ok = await checkAdminPass((req.body || {}).password);
+  if (!ok) return res.status(401).json({ error: 'Wrong password' });
+  res.json({ ok: true });
+});
+
+// GET /api/drivers/admin/list?status=pending — list applicants (no image blobs)
+router.get('/admin/list', adminPass, async (req, res) => {
+  try {
+    const { status } = req.query;
+    const params = [];
+    let where = '';
+    if (status && status !== 'all') { params.push(status); where = 'WHERE d.status = $1'; }
+    const result = await pool.query(`
+      SELECT d.id, d.full_name, d.phone, d.whatsapp, d.email, d.city,
+             d.vehicle_type, d.vehicle_make, d.vehicle_model, d.vehicle_year,
+             d.vehicle_color, d.license_plate, d.license_number,
+             d.oavct_number, d.oavct_expiry, d.referral_partner,
+             d.status, d.is_verified, d.rejection_reason, d.created_at, d.reviewed_at,
+             (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id) AS doc_count
+      FROM drivers d ${where}
+      ORDER BY d.created_at DESC
+      LIMIT 300
+    `, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Admin list error:', err);
+    res.status(500).json({ error: 'Failed to list drivers' });
+  }
+});
+
+// GET /api/drivers/admin/counts — counts per status for the dashboard tabs
+router.get('/admin/counts', adminPass, async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT status, COUNT(*)::int AS count FROM drivers GROUP BY status`);
+    const counts = { pending: 0, approved: 0, rejected: 0, suspended: 0, all: 0 };
+    r.rows.forEach(row => { counts[row.status] = row.count; counts.all += row.count; });
+    res.json(counts);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch counts' });
+  }
+});
+
+// GET /api/drivers/admin/:id — one applicant with every field + all document images
+router.get('/admin/:id', adminPass, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const d = await pool.query(`SELECT * FROM drivers WHERE id = $1`, [id]);
+    if (d.rows.length === 0) return res.status(404).json({ error: 'Driver not found' });
+    const docs = await pool.query(
+      `SELECT doc_type, mime, image_data, created_at FROM driver_documents WHERE driver_id = $1`, [id]
+    );
+    const documents = docs.rows.map(r => ({
+      doc_type: r.doc_type,
+      created_at: r.created_at,
+      data_url: `data:${r.mime};base64,${r.image_data}`
+    }));
+    res.json({ driver: d.rows[0], documents });
+  } catch (err) {
+    console.error('Admin detail error:', err);
+    res.status(500).json({ error: 'Failed to fetch driver' });
+  }
+});
+
+// POST /api/drivers/admin/:id/approve
+router.post('/admin/:id/approve', adminPass, async (req, res) => {
+  try {
+    const r = await pool.query(`
+      UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
+             rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = 'admin'
+      WHERE id = $1 RETURNING id, full_name, status, is_verified
+    `, [req.params.id]);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'Driver not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to approve driver' });
+  }
+});
+
+// POST /api/drivers/admin/:id/reject
+router.post('/admin/:id/reject', adminPass, async (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    const r = await pool.query(`
+      UPDATE drivers SET status = 'rejected', is_verified = false,
+             rejection_reason = $2, reviewed_at = NOW(), reviewed_by = 'admin'
+      WHERE id = $1 RETURNING id, full_name, status
+    `, [req.params.id, reason || 'Application rejected']);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'Driver not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reject driver' });
   }
 });
 

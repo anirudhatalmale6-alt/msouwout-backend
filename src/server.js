@@ -63,6 +63,11 @@ app.get('/money', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'money.html'));
 });
 
+// Driver review dashboard (password-gated by the DB-stored admin password)
+app.get('/driver-admin', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'driver-admin.html'));
+});
+
 let dbReady = false;
 let dbError = null;
 
