@@ -210,6 +210,48 @@ router.post('/admin/:id/reject', adminPass, async (req, res) => {
   }
 });
 
+// PATCH /api/drivers/admin/:id — admin edits/fills the detail fields while
+// reviewing a driver's uploaded photos (make, model, plate, license #, etc.).
+const ADMIN_EDITABLE = [
+  'full_name', 'phone', 'whatsapp', 'email', 'city', 'vehicle_type',
+  'vehicle_make', 'vehicle_model', 'vehicle_year', 'vehicle_color',
+  'license_plate', 'license_number', 'oavct_number', 'oavct_expiry',
+  'referral_partner', 'syndicate'
+];
+router.patch('/admin/:id', adminPass, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const sets = [];
+    const params = [];
+    for (const field of ADMIN_EDITABLE) {
+      if (!(field in body)) continue;
+      let val = body[field];
+      if (val === '' || val === undefined) val = null;
+      if (field === 'vehicle_year') {
+        const n = parseInt(val, 10);
+        val = Number.isFinite(n) ? n : null;
+      }
+      if (field === 'oavct_expiry') {
+        val = (val && /^\d{4}-\d{2}-\d{2}$/.test(val)) ? val : null;
+      }
+      params.push(val);
+      sets.push(`${field} = $${params.length}`);
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'No editable fields provided' });
+    params.push(id);
+    const r = await pool.query(
+      `UPDATE drivers SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING id`,
+      params
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'Driver not found' });
+    res.json({ saved: true, id: r.rows[0].id });
+  } catch (err) {
+    console.error('Admin edit error:', err);
+    res.status(500).json({ error: 'Failed to save driver details' });
+  }
+});
+
 // GET /api/drivers - List drivers (admin)
 router.get('/', async (req, res) => {
   try {

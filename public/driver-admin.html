@@ -76,6 +76,15 @@
   .fld .k{font-size:11.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em;}
   .fld .v{font-size:15px;font-weight:600;margin-top:2px;word-break:break-word;}
   .fld .v.empty-v{color:#b3bccd;font-weight:400;font-style:italic;}
+  .fld input,.fld select{width:100%;margin-top:4px;padding:9px 10px;border:1.5px solid var(--line);
+    border-radius:8px;font-size:14.5px;font-weight:600;color:var(--ink);background:#fff;font-family:inherit;}
+  .fld input:focus,.fld select:focus{outline:none;border-color:var(--navy);}
+  .sec-hint{font-size:12px;color:var(--muted);font-weight:500;margin:-4px 0 10px;}
+  .save-row{margin-top:16px;}
+  .save-btn{width:100%;background:var(--navy);color:#fff;border:none;border-radius:11px;padding:13px;
+    font-size:14.5px;font-weight:800;cursor:pointer;}
+  .save-btn:active{transform:scale(.99);}
+  .save-btn.saved{background:var(--ok);}
   .docs{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
   .doc{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#f8fafd;text-align:center;}
   .doc img{width:100%;height:96px;object-fit:cover;display:block;cursor:zoom-in;background:#eef2f8;}
@@ -221,6 +230,25 @@ var DOC_ORDER = ['selfie','id','license','oavct','vehicle','insurance'];
 
 function fld(k,v){ var empty=(v==null||v===''); return '<div class="fld"><div class="k">'+k+'</div><div class="v'+(empty?' empty-v':'')+'">'+(empty?'—':esc(v))+'</div></div>'; }
 
+/* editable field: text/date input or select, tagged with data-f for saving */
+function inp(field,label,v,opts){
+  opts = opts || {};
+  var val = (v==null?'':String(v));
+  var control;
+  if(opts.options){
+    control = '<select data-f="'+field+'">'+
+      opts.options.map(function(o){
+        var ov=o[0], ol=o[1];
+        return '<option value="'+esc(ov)+'"'+(val===ov?' selected':'')+'>'+esc(ol)+'</option>';
+      }).join('')+'</select>';
+  } else {
+    control = '<input data-f="'+field+'" type="'+(opts.type||'text')+'" value="'+esc(val)+'"'+
+      (opts.placeholder?' placeholder="'+esc(opts.placeholder)+'"':'')+
+      (opts.type==='date'?'':' autocomplete="off"')+'>';
+  }
+  return '<div class="fld"><div class="k">'+label+'</div>'+control+'</div>';
+}
+
 function openDriver(id){
   api('/'+id).then(function(res){
     currentDriver = res.driver;
@@ -252,14 +280,22 @@ function openDriver(id){
         '<div class="nm">'+esc(d.full_name)+'</div><div class="ph">'+esc(d.phone)+' · <span style="text-transform:capitalize">'+d.status+'</span></div></div>'+
       '<div class="sheet-body">'+
         '<div class="sec-title">Documents</div><div class="docs">'+docsHtml+'</div>'+
-        '<div class="sec-title">Contact</div><div class="grid">'+
-          fld('Phone',d.phone)+fld('WhatsApp',d.whatsapp)+fld('Email',d.email)+fld('City / Zone',d.city)+'</div>'+
+        '<div class="sec-title">Contact</div>'+
+        '<div class="sec-hint">Review the photos above, then fill in / correct the details below.</div>'+
+        '<div class="grid">'+
+          inp('full_name','Full Name',d.full_name)+inp('phone','Phone',d.phone)+
+          inp('whatsapp','WhatsApp',d.whatsapp)+inp('email','Email',d.email)+
+          inp('city','City / Zone',d.city)+'</div>'+
         '<div class="sec-title">Vehicle</div><div class="grid">'+
-          fld('Type',d.vehicle_type)+fld('Make / Model',[d.vehicle_make,d.vehicle_model].filter(Boolean).join(' '))+
-          fld('Year',d.vehicle_year)+fld('Color',d.vehicle_color)+fld('License Plate',d.license_plate)+'</div>'+
+          inp('vehicle_type','Type',d.vehicle_type,{options:[['','—'],['motorcycle','Moto'],['car','Car'],['both','Both']]})+
+          inp('vehicle_make','Make',d.vehicle_make)+inp('vehicle_model','Model',d.vehicle_model)+
+          inp('vehicle_year','Year',d.vehicle_year,{type:'number'})+inp('vehicle_color','Color',d.vehicle_color)+
+          inp('license_plate','License Plate',d.license_plate)+'</div>'+
         '<div class="sec-title">Documents & IDs</div><div class="grid">'+
-          fld('Driver License #',d.license_number)+fld('OAVCT #',d.oavct_number)+fld('OAVCT Expiry',expiry)+
-          fld('Referral Partner',d.referral_partner)+'</div>'+
+          inp('license_number','Driver License #',d.license_number)+inp('oavct_number','OAVCT #',d.oavct_number)+
+          inp('oavct_expiry','OAVCT Expiry',expiry,{type:'date'})+
+          inp('referral_partner','Referral Partner',d.referral_partner)+'</div>'+
+        '<div class="save-row"><button class="save-btn" id="saveBtn">Save details</button></div>'+
         actions +
       '</div>';
 
@@ -269,6 +305,8 @@ function openDriver(id){
     Array.prototype.forEach.call(h('#sheet').querySelectorAll('.doc img'),function(img){
       img.onclick = function(){ h('#lightboxImg').src=img.getAttribute('data-full'); h('#lightbox').classList.add('on'); };
     });
+    var sb=h('#saveBtn');
+    if(sb) sb.onclick = function(){ saveDriver(sb); };
     var ab=h('#approveBtn'), rb=h('#rejectBtn');
     if(ab) ab.onclick = function(){ decide('approve'); };
     if(rb) rb.onclick = function(){
@@ -277,6 +315,23 @@ function openDriver(id){
       decide('reject', reason);
     };
   }).catch(function(e){ if(e.message!=='unauth') toast('Could not open driver.'); });
+}
+
+function saveDriver(btn){
+  if(!currentDriver) return;
+  var payload = {};
+  Array.prototype.forEach.call(h('#sheet').querySelectorAll('[data-f]'),function(el){
+    payload[el.getAttribute('data-f')] = el.value.trim();
+  });
+  btn.disabled=true; btn.textContent='Saving…';
+  api('/'+currentDriver.id, {method:'PATCH', body: JSON.stringify(payload)})
+    .then(function(){
+      btn.textContent='Saved ✓'; btn.classList.add('saved');
+      toast('Details saved ✓');
+      loadList();
+      setTimeout(function(){ btn.disabled=false; btn.textContent='Save details'; btn.classList.remove('saved'); },1600);
+    })
+    .catch(function(){ btn.disabled=false; btn.textContent='Save details'; toast('Save failed.'); });
 }
 
 function decide(action, reason){
