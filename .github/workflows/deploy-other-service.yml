@@ -29,6 +29,7 @@ jobs:
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       SERVICE_NAME: ${{ github.event.inputs.service_name }}
+      HEALTH_PATH: ${{ github.event.inputs.health_path }}
     steps:
       - name: Guard against a missing key
         run: '[ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }'
@@ -37,16 +38,8 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
-            "https://api.render.com/v1/services?limit=100" \
-            | python3 -c "import json,sys
-name=sys.argv[1]
-for row in json.load(sys.stdin):
-    s=row.get('service',row)
-    if s.get('name')==name:
-        print(s['id']); break
-else:
-    sys.exit('no service named '+name)" "$SERVICE_NAME")"
+          sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d[0].get("service",d[0]))["id"] if d else "")')"
+          [ -n "$sid" ] || { echo "no service named $SERVICE_NAME"; exit 1; }
           echo "Resolved $SERVICE_NAME -> $sid"
           echo "sid=$sid" >> "$GITHUB_OUTPUT"
 
@@ -54,11 +47,7 @@ else:
         id: trigger
         run: |
           set -euo pipefail
-          resp="$(curl -sS -X POST \
-            -H "Authorization: Bearer $RENDER_API_KEY" \
-            -H "Content-Type: application/json" \
-            "https://api.render.com/v1/services/${{ steps.resolve.outputs.sid }}/deploys" \
-            -d '{"clearCache":"do_not_clear"}')"
+          resp="$(curl -sS -X POST -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" "https://api.render.com/v1/services/${{ steps.resolve.outputs.sid }}/deploys" -d '{"clearCache":"do_not_clear"}')"
           id="$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
           echo "Triggered deploy $id"
           echo "deploy_id=$id" >> "$GITHUB_OUTPUT"
@@ -69,14 +58,11 @@ else:
           id="${{ steps.trigger.outputs.deploy_id }}"
           sid="${{ steps.resolve.outputs.sid }}"
           for i in $(seq 1 80); do
-            status="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
-              "https://api.render.com/v1/services/$sid/deploys/$id" \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+            status="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/$sid/deploys/$id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
             echo "[$i] $status"
             case "$status" in
               live) exit 0 ;;
-              build_failed|update_failed|canceled|pre_deploy_failed)
-                echo "Deploy finished as: $status"; exit 1 ;;
+              build_failed|update_failed|canceled|pre_deploy_failed) echo "Deploy finished as: $status"; exit 1 ;;
             esac
             sleep 15
           done
@@ -85,7 +71,6 @@ else:
       - name: Verify health
         run: |
           set -euo pipefail
-          base="https://${SERVICE_NAME}.onrender.com"
-          code="$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 --retry-all-errors -m 60 "$base${{ github.event.inputs.health_path }}")"
-          echo "$base${{ github.event.inputs.health_path }} -> $code"
+          code="$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 --retry-all-errors -m 60 "https://$SERVICE_NAME.onrender.com$HEALTH_PATH")"
+          echo "https://$SERVICE_NAME.onrender.com$HEALTH_PATH -> $code"
           [ "$code" = "200" ] || { echo "health check did not return 200"; exit 1; }
