@@ -1,0 +1,91 @@
+name: Deploy another Render service
+
+# Render's GitHub push webhook silently stopped firing for some services on this
+# account (see deploy.yml). This manually-triggered workflow deploys any service
+# on the same Render account by name, using the RENDER_API_KEY secret, and waits
+# for it to reach `live`. Used to unblock myplopplop-api when its auto-deploy
+# stopped delivering commits.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: Render service name to deploy
+        required: true
+        default: myplopplop-api
+      health_path:
+        description: Health path to verify after deploy
+        required: false
+        default: /api/health
+
+concurrency:
+  group: render-deploy-other
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SERVICE_NAME: ${{ github.event.inputs.service_name }}
+    steps:
+      - name: Guard against a missing key
+        run: '[ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }'
+
+      - name: Resolve service id by name
+        id: resolve
+        run: |
+          set -euo pipefail
+          sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services?limit=100" \
+            | python3 -c "import json,sys
+name=sys.argv[1]
+for row in json.load(sys.stdin):
+    s=row.get('service',row)
+    if s.get('name')==name:
+        print(s['id']); break
+else:
+    sys.exit('no service named '+name)" "$SERVICE_NAME")"
+          echo "Resolved $SERVICE_NAME -> $sid"
+          echo "sid=$sid" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger deploy
+        id: trigger
+        run: |
+          set -euo pipefail
+          resp="$(curl -sS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/${{ steps.resolve.outputs.sid }}/deploys" \
+            -d '{"clearCache":"do_not_clear"}')"
+          id="$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          echo "Triggered deploy $id"
+          echo "deploy_id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the deploy to go live
+        run: |
+          set -euo pipefail
+          id="${{ steps.trigger.outputs.deploy_id }}"
+          sid="${{ steps.resolve.outputs.sid }}"
+          for i in $(seq 1 80); do
+            status="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$sid/deploys/$id" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+            echo "[$i] $status"
+            case "$status" in
+              live) exit 0 ;;
+              build_failed|update_failed|canceled|pre_deploy_failed)
+                echo "Deploy finished as: $status"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "Deploy did not reach 'live' in time"; exit 1
+
+      - name: Verify health
+        run: |
+          set -euo pipefail
+          base="https://${SERVICE_NAME}.onrender.com"
+          code="$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 --retry-all-errors -m 60 "$base${{ github.event.inputs.health_path }}")"
+          echo "$base${{ github.event.inputs.health_path }} -> $code"
+          [ "$code" = "200" ] || { echo "health check did not return 200"; exit 1; }
