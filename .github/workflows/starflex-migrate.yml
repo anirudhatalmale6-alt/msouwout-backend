@@ -1,0 +1,19 @@
+name: STARFLEX migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      setup_key:
+        description: One-time setup key
+        required: true
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SETUP_KEY: ${{ github.event.inputs.setup_key }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set key, deploy, migrate
+        run: bash scripts/starflex-setupkey.sh
