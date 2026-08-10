@@ -1,7 +1,5 @@
 name: Render account info
 
-# Read-only inventory of the Render account (services + postgres instances),
-# so we can plan new deployments without dashboard access.
 on:
   workflow_dispatch:
 
@@ -11,27 +9,6 @@ jobs:
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
     steps:
-      - name: Guard
-        run: '[ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY not set"; exit 1; }'
-      - name: Services
-        run: |
-          set -euo pipefail
-          curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?limit=100" \
-          | python3 -c 'import json,sys
-for row in json.load(sys.stdin):
-    s=row.get("service",row)
-    print(f"SERVICE {s.get(\"name\"):<28} {s.get(\"type\",\"\"):<12} suspended={s.get(\"suspended\",\"\")} {s.get(\"id\")}")'
-      - name: Postgres
-        run: |
-          set -euo pipefail
-          curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/postgres?limit=20" \
-          | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if not d: print("NO POSTGRES INSTANCES")
-for row in d:
-    p=row.get("postgres",row)
-    print(f"PG {p.get(\"name\"):<24} status={p.get(\"status\")} plan={p.get(\"plan\")} expires={p.get(\"expiresAt\",\"never\")} {p.get(\"id\")}")'
-      - name: Owner
-        run: |
-          curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/owners?limit=1" \
-          | python3 -c 'import json,sys; d=json.load(sys.stdin); o=d[0]["owner"]; print("OWNER", o["id"], o.get("email",""))'
+      - uses: actions/checkout@v4
+      - name: Inventory
+        run: bash scripts/render-info.sh
