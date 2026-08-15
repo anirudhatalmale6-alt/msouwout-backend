@@ -1,0 +1,93 @@
+name: Set one Render env var
+
+# Sets (or updates) a SINGLE environment variable on a Render service, then
+# deploys it. The value never appears in the workflow inputs or the logs — it is
+# read from a repository secret, so nothing sensitive is typed into the UI.
+#
+# Deliberately uses PUT /env-vars/{key}, which touches one key. The bare
+# PUT /env-vars endpoint REPLACES the whole environment and would wipe the
+# database URL of whatever service it was pointed at.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: Render service name
+        required: true
+        default: myplopplop-api
+      env_key:
+        description: Name of the environment variable to set
+        required: true
+        default: OPENAI_API_KEY
+      secret_name:
+        description: Which repository secret holds the value (OPENAI_API_KEY only, for now)
+        required: true
+        default: OPENAI_API_KEY
+
+concurrency:
+  group: render-env
+  cancel-in-progress: false
+
+jobs:
+  set:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SECRET_VALUE: ${{ secrets.OPENAI_API_KEY }}
+      SERVICE_NAME: ${{ github.event.inputs.service_name }}
+      ENV_KEY: ${{ github.event.inputs.env_key }}
+    steps:
+      - name: Guard
+        run: |
+          [ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }
+          [ -n "$SECRET_VALUE" ] || { echo "the value secret is empty"; exit 1; }
+          [ "${{ github.event.inputs.secret_name }}" = "OPENAI_API_KEY" ] || { echo "only OPENAI_API_KEY is wired up"; exit 1; }
+
+      - name: Resolve service id by name
+        id: resolve
+        run: |
+          set -euo pipefail
+          sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d[0].get("service",d[0]))["id"] if d else "")')"
+          [ -n "$sid" ] || { echo "no service named $SERVICE_NAME"; exit 1; }
+          echo "Resolved $SERVICE_NAME -> $sid"
+          echo "sid=$sid" >> "$GITHUB_OUTPUT"
+
+      - name: Set the variable
+        run: |
+          set -euo pipefail
+          code="$(python3 - <<'PY'
+import json, os, urllib.request, urllib.error
+url = "https://api.render.com/v1/services/%s/env-vars/%s" % (os.environ["SID"], os.environ["ENV_KEY"])
+body = json.dumps({"value": os.environ["SECRET_VALUE"]}).encode()
+req = urllib.request.Request(url, data=body, method="PUT", headers={
+    "Authorization": "Bearer " + os.environ["RENDER_API_KEY"],
+    "Content-Type": "application/json",
+})
+try:
+    with urllib.request.urlopen(req) as r:
+        print(r.status)
+except urllib.error.HTTPError as e:
+    print(e.status)
+PY
+)"
+          echo "Render replied $code"
+          [ "$code" = "200" ] || [ "$code" = "201" ] || { echo "failed to set $ENV_KEY"; exit 1; }
+        env:
+          SID: ${{ steps.resolve.outputs.sid }}
+
+      - name: Deploy so the new value is picked up
+        run: |
+          set -euo pipefail
+          id="$(curl -sS -X POST -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" "https://api.render.com/v1/services/${{ steps.resolve.outputs.sid }}/deploys" -d '{"clearCache":"do_not_clear"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          echo "Triggered deploy $id"
+          for i in $(seq 1 80); do
+            st="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/${{ steps.resolve.outputs.sid }}/deploys/$id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+            echo "  $i: $st"
+            case "$st" in
+              live) echo "deploy live"; exit 0 ;;
+              build_failed|update_failed|canceled|pre_deploy_failed) echo "deploy $st"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "timed out waiting for the deploy"; exit 1
