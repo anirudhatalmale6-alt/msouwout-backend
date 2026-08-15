@@ -56,21 +56,13 @@ jobs:
       - name: Set the variable
         run: |
           set -euo pipefail
-          code="$(python3 - <<'PY'
-import json, os, urllib.request, urllib.error
-url = "https://api.render.com/v1/services/%s/env-vars/%s" % (os.environ["SID"], os.environ["ENV_KEY"])
-body = json.dumps({"value": os.environ["SECRET_VALUE"]}).encode()
-req = urllib.request.Request(url, data=body, method="PUT", headers={
-    "Authorization": "Bearer " + os.environ["RENDER_API_KEY"],
-    "Content-Type": "application/json",
-})
-try:
-    with urllib.request.urlopen(req) as r:
-        print(r.status)
-except urllib.error.HTTPError as e:
-    print(e.status)
-PY
-)"
+          # Built with json.dumps and written to a file, so the value is neither
+          # shell-quoted by hand nor visible in the process list.
+          python3 -c 'import json,os;open("/tmp/env.json","w").write(json.dumps({"value":os.environ["SECRET_VALUE"]}))'
+          code="$(curl -sS -o /tmp/env.out -w '%{http_code}' -X PUT \
+            -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/$SID/env-vars/$ENV_KEY" -d @/tmp/env.json)"
+          rm -f /tmp/env.json
           echo "Render replied $code"
           [ "$code" = "200" ] || [ "$code" = "201" ] || { echo "failed to set $ENV_KEY"; exit 1; }
         env:
