@@ -78,34 +78,71 @@ router.post('/calculate', async (req, res) => {
 // POST /api/rides/request — Request a ride
 router.post('/request', async (req, res) => {
   try {
-    const {
-      user_id, customer_name, customer_phone, pickup, dropoff, ride_type, price, payment_method,
-      // Medical protection toggle
-      medical_protection,
-      // Delegation fields (order for someone else)
-      is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone
-    } = req.body;
+    const b = req.body || {};
+    // The website has always posted riderPhone/pickupAddress/vehicleType while this
+    // route read customer_phone/pickup/ride_type, so every order 400'd and the page
+    // quietly showed a "searching" screen anyway. Accept both spellings rather than
+    // break whichever client is not redeployed yet.
+    const customer_phone = b.customer_phone || b.riderPhone || b.phone;
+    const customer_name  = b.customer_name  || b.riderName;
+    const user_id        = b.user_id;
+    const payment_method = b.payment_method;
+    const pickup  = b.pickup  != null ? b.pickup  : b.pickupAddress;
+    const dropoff = b.dropoff != null ? b.dropoff : b.dropoffAddress;
+    const ride_type = b.ride_type || b.vehicleType || b.rideType;
+    const price = b.price;
+    const { is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone } = b;
 
     if (!pickup || !dropoff || !customer_phone) {
       return res.status(400).json({ error: 'pickup, dropoff, ak customer_phone obligatwa' });
     }
 
-    const rideType = (ride_type || 'moto').toLowerCase();
+    const rideType = (ride_type === 'car' || ride_type === 'machin') ? 'car' : 'moto';
 
-    let pickupLat, pickupLng, dropoffLat, dropoffLng;
-    if (typeof pickup === 'string') {
-      [pickupLat, pickupLng] = pickup.split(',').map(Number);
-    } else {
-      pickupLat = pickup.lat; pickupLng = pickup.lng;
-    }
-    if (typeof dropoff === 'string') {
-      [dropoffLat, dropoffLng] = dropoff.split(',').map(Number);
-    } else {
-      dropoffLat = dropoff.lat; dropoffLng = dropoff.lng;
+    // A place is either a point or a sentence. Only a "lat,lng" string or a {lat,lng}
+    // object is a point; anything else is what the passenger actually typed, and it is
+    // the address — not a broken coordinate — that the driver needs to read.
+    function readPlace(value, latHint, lngHint) {
+      const num = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));
+      if (value && typeof value === 'object') {
+        const la = num(value.lat), ln = num(value.lng);
+        if (Number.isFinite(la) && Number.isFinite(ln)) return { lat: la, lng: ln, address: value.address || null };
+      }
+      if (typeof value === 'string' && /^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*$/.test(value)) {
+        const [la, ln] = value.split(',').map(Number);
+        return { lat: la, lng: ln, address: null };
+      }
+      const la = num(latHint), ln = num(lngHint);
+      return {
+        lat: Number.isFinite(la) ? la : null,
+        lng: Number.isFinite(ln) ? ln : null,
+        address: typeof value === 'string' ? value.trim() : null
+      };
     }
 
-    const estimate = await pricing.calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideType);
-    const finalPrice = price || estimate.price;
+    const from = readPlace(pickup,  b.pickupLat,  b.pickupLng);
+    const to   = readPlace(dropoff, b.dropoffLat, b.dropoffLng);
+    const pickupLat = from.lat, pickupLng = from.lng;
+    const dropoffLat = to.lat,  dropoffLng = to.lng;
+    const havePoints = [pickupLat, pickupLng, dropoffLat, dropoffLng].every(Number.isFinite);
+
+    // With two real points the server prices the ride. With written addresses it cannot
+    // measure the distance, so it trusts the figure the passenger was actually shown —
+    // quoting one price on the phone and storing another is worse than a rough estimate.
+    let estimate;
+    if (havePoints) {
+      estimate = await pricing.calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideType);
+    } else {
+      const km = Number(b.distance_km);
+      const config = await pricing.getPricingConfig();
+      const distanceKm = Number.isFinite(km) && km > 0 ? km : 3;
+      estimate = {
+        distance_km: distanceKm,
+        duration_min: pricing.estimateDuration(distanceKm),
+        price: pricing.calculatePrice(rideType, distanceKm, config, 1.0)
+      };
+    }
+    const finalPrice = Math.round(Number(price) > 0 ? Number(price) : estimate.price);
     const config = await pricing.getPricingConfig();
     const commission = pricing.calculateCommission(finalPrice, config);
 
@@ -138,9 +175,10 @@ router.post('/request', async (req, res) => {
         payment_method, tracking_code, ride_pin, status,
         medical_protection, medical_fee, dash_fee, msouwout_medical_fee, driver_dash_share, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
+        pickup_address, dropoff_address,
         created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW())`,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
@@ -149,7 +187,8 @@ router.post('/request', async (req, res) => {
        wantsMedical, medicalFee, dashFee, msouwoutMedicalFee, driverDashShare, totalWithProtection,
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
-       delegated ? passenger_name : null, delegated ? passenger_phone : null]
+       delegated ? passenger_name : null, delegated ? passenger_phone : null,
+       from.address, to.address]
     );
 
     const response = {
@@ -157,6 +196,8 @@ router.post('/request', async (req, res) => {
       tracking_code: trackingCode,
       ride_pin: ridePin,
       status: 'searching',
+      pickup_address: from.address,
+      dropoff_address: to.address,
       distance_km: estimate.distance_km,
       duration_min: estimate.duration_min,
       price: finalPrice,
@@ -297,6 +338,58 @@ router.get('/reports/money', async (req, res) => {
 });
 
 // GET /api/rides/:id — Get ride details
+// GET /api/rides/available — what a driver on duty should be seeing.
+//
+// ⚠️ Must stay ABOVE `GET /:id`, or Express reads "available" as a ride id.
+//
+// Only rides still searching, and only recent ones: an order from this morning is
+// not something a driver should be offered at eight in the evening.
+router.get('/available', async (req, res) => {
+  try {
+    const rideType = req.query.ride_type;
+    const minutes = Math.min(parseInt(req.query.minutes, 10) || 60, 720);
+    const params = [];
+    let where = `WHERE r.status = 'searching' AND r.created_at > NOW() - INTERVAL '${minutes} minutes'`;
+    if (rideType === 'car' || rideType === 'moto') {
+      params.push(rideType);
+      where += ` AND r.ride_type = $${params.length}`;
+    }
+    const result = await pool.query(
+      `SELECT r.id, r.tracking_code, r.customer_name, r.customer_phone,
+              r.pickup_address, r.dropoff_address, r.pickup_lat, r.pickup_lng,
+              r.dropoff_lat, r.dropoff_lng, r.ride_type, r.distance_km, r.duration_min,
+              r.price, r.driver_earning, r.total_with_protection, r.payment_method,
+              r.created_at
+       FROM ride_requests r ${where}
+       ORDER BY r.created_at DESC LIMIT 20`,
+      params
+    );
+    res.json({ rides: result.rows, total: result.rows.length });
+  } catch (err) {
+    console.error('Available rides error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+// GET /api/rides/driver/:driverId/active — the ride this driver is on right now.
+// The dashboard used to learn about rides only at login, so a ride accepted after
+// login stayed invisible until the driver signed out and back in.
+router.get('/driver/:driverId/active', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone, d.license_plate
+       FROM ride_requests r LEFT JOIN drivers d ON r.driver_id = d.id
+       WHERE r.driver_id = $1 AND r.status IN ('accepted','in_progress')
+       ORDER BY r.updated_at DESC LIMIT 1`,
+      [req.params.driverId]
+    );
+    res.json({ ride: result.rows[0] || null });
+  } catch (err) {
+    console.error('Driver active ride error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const param = req.params.id;
@@ -561,8 +654,10 @@ router.get('/:id/track', async (req, res) => {
       tracking_code: ride.tracking_code,
       status: ride.status,
       ride_pin: showPin ? ride.ride_pin : undefined,
-      pickup: { lat: ride.pickup_lat, lng: ride.pickup_lng },
-      dropoff: { lat: ride.dropoff_lat, lng: ride.dropoff_lng },
+      pickup: { lat: ride.pickup_lat, lng: ride.pickup_lng, address: ride.pickup_address },
+      dropoff: { lat: ride.dropoff_lat, lng: ride.dropoff_lng, address: ride.dropoff_address },
+      pickup_address: ride.pickup_address,
+      dropoff_address: ride.dropoff_address,
       rider: { name: ride.customer_name, phone: ride.customer_phone },
       driver: ride.driver_id ? {
         name: ride.driver_name,

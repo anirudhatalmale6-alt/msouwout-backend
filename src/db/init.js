@@ -435,6 +435,20 @@ async function runMigrations(client) {
         );
         CREATE INDEX IF NOT EXISTS idx_driver_documents_driver ON driver_documents (driver_id);
       `);
+      // A ride ordered in Haiti is described in words, not coordinates: "Delmas 33,
+      // devan famasi a". The table only had lat/lng, and they were NOT NULL, so a
+      // request typed as an address could not be stored at all — the app fell back to
+      // a WhatsApp handoff and nothing ever reached the driver screen. Keep the
+      // coordinates for when the phone gives them, but let the written address be the
+      // thing that travels, and stop the NOT NULL from rejecting a real order.
+      await client.query(`
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS pickup_address TEXT;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS dropoff_address TEXT;
+        ALTER TABLE ride_requests ALTER COLUMN pickup_lat DROP NOT NULL;
+        ALTER TABLE ride_requests ALTER COLUMN pickup_lng DROP NOT NULL;
+        ALTER TABLE ride_requests ALTER COLUMN dropoff_lat DROP NOT NULL;
+        ALTER TABLE ride_requests ALTER COLUMN dropoff_lng DROP NOT NULL;
+      `);
       // Default admin password for the driver-review dashboard. Jeffery can change it
       // later; seeded once and never overwritten.
       await client.query(`
