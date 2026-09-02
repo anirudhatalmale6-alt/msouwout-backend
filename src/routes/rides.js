@@ -376,6 +376,12 @@ router.get('/available', async (req, res) => {
 // login stayed invisible until the driver signed out and back in.
 router.get('/driver/:driverId/active', async (req, res) => {
   try {
+    // The demo account's id is the word "demo", not a uuid. Postgres answers a bad
+    // cast with an error, which reached the driver's phone as "Erè sèvè" — a server
+    // fault for what is simply an account with no rides.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.driverId)) {
+      return res.json({ ride: null });
+    }
     const result = await pool.query(
       `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone, d.license_plate
        FROM ride_requests r LEFT JOIN drivers d ON r.driver_id = d.id
@@ -441,6 +447,11 @@ router.patch('/:id/accept', async (req, res) => {
     const { driver_id } = req.body;
     if (!driver_id) {
       return res.status(400).json({ error: 'driver_id obligatwa' });
+    }
+    // Say "this account cannot take rides" rather than letting a bad uuid become a
+    // 500 the driver reads as the whole system being down.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(driver_id)) {
+      return res.status(404).json({ error: 'Chofè pa jwenn oswa pa apwouve' });
     }
 
     const ride = await pool.query('SELECT * FROM ride_requests WHERE id = $1', [req.params.id]);
