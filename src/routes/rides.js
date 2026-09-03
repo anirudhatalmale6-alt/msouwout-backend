@@ -463,10 +463,17 @@ router.patch('/:id/accept', async (req, res) => {
     const driver = await pool.query('SELECT * FROM drivers WHERE id = $1 AND status = $2', [driver_id, 'approved']);
     if (driver.rows.length === 0) return res.status(404).json({ error: 'Chofè pa jwenn oswa pa apwouve' });
 
-    await pool.query(
-      `UPDATE ride_requests SET driver_id = $1, status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE id = $2`,
+    // With ten drivers watching the same board, two can tap Accept in the same
+    // second — and the SELECT above would say "searching" to both. The status is
+    // re-checked inside the UPDATE itself, so exactly one row can change hands.
+    const claim = await pool.query(
+      `UPDATE ride_requests SET driver_id = $1, status = 'accepted', accepted_at = NOW(), updated_at = NOW()
+        WHERE id = $2 AND status = 'searching'`,
       [driver_id, req.params.id]
     );
+    if (claim.rowCount === 0) {
+      return res.status(400).json({ error: 'Kous sa deja pran' });
+    }
 
     res.json({
       status: 'accepted',
