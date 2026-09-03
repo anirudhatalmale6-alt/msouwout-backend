@@ -466,12 +466,38 @@ router.patch('/:id/accept', async (req, res) => {
     // With ten drivers watching the same board, two can tap Accept in the same
     // second — and the SELECT above would say "searching" to both. The status is
     // re-checked inside the UPDATE itself, so exactly one row can change hands.
+    //
+    // The NOT EXISTS is the other half of it. Nothing hands a particular ride to a
+    // particular driver: every searching ride is on every board. So when two
+    // passengers order at the same moment, both requests sit in front of the same
+    // driver and he can take both — and his phone only ever shows one of them.
+    // The second passenger would be told a driver is coming who does not know she
+    // exists. One unfinished ride per driver, decided by the database so two taps
+    // in the same second cannot both slip through.
     const claim = await pool.query(
       `UPDATE ride_requests SET driver_id = $1, status = 'accepted', accepted_at = NOW(), updated_at = NOW()
-        WHERE id = $2 AND status = 'searching'`,
+        WHERE id = $2 AND status = 'searching'
+          AND NOT EXISTS (
+            SELECT 1 FROM ride_requests busy
+             WHERE busy.driver_id = $1 AND busy.status IN ('accepted','in_progress')
+          )`,
       [driver_id, req.params.id]
     );
     if (claim.rowCount === 0) {
+      // Refused for one of two very different reasons. Telling him "already taken"
+      // when the truth is "you have not finished your own ride" sends him hunting
+      // for a bug that is not there.
+      const held = await pool.query(
+        `SELECT tracking_code FROM ride_requests
+          WHERE driver_id = $1 AND status IN ('accepted','in_progress') LIMIT 1`,
+        [driver_id]
+      );
+      if (held.rows.length > 0) {
+        return res.status(409).json({
+          error: 'Ou gen yon kous ki poko fini. Fini l anvan ou pran yon lòt.',
+          active_ride: held.rows[0].tracking_code
+        });
+      }
       return res.status(400).json({ error: 'Kous sa deja pran' });
     }
 
