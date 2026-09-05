@@ -31,14 +31,32 @@ app.use(express.urlencoded({ extended: true }));
 // Static files for admin dashboard
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Simple auth middleware for admin routes
+// Simple auth middleware for admin routes.
+//
+// This used to read `if (process.env.ADMIN_SECRET && secret !== ...)`, which
+// let everybody through on any day that variable went missing - a lock that
+// stops locking without anything looking broken. It now refuses when nothing
+// is configured, and says so in the log.
 function adminAuth(req, res, next) {
   const secret = req.headers['x-admin-secret'] || req.query.secret;
-  if (process.env.ADMIN_SECRET && secret !== process.env.ADMIN_SECRET) {
+  if (!process.env.ADMIN_SECRET) {
+    console.error('ADMIN LOCKOUT: ADMIN_SECRET is not set, refusing ' +
+      req.method + ' ' + req.path + ' rather than letting it through.');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (secret !== process.env.ADMIN_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
 }
+
+// Everything an administrator alone should be able to do - approving drivers
+// and businesses, verifying fleets, the fare table, the driver list with
+// everyone's phone number in it. See middleware/adminOnly.js for the list and
+// for why it exists. Mounted BEFORE the routers so a route cannot be added
+// later that quietly misses it.
+const { adminOnly } = require('./middleware/adminOnly');
+app.use(adminOnly);
 
 // API Routes
 app.use('/api/zones', adminAuth, zonesRouter);
