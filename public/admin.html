@@ -301,7 +301,64 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script>
 const API_BASE = window.location.origin;
-const ADMIN_SECRET = new URLSearchParams(window.location.search).get('secret') || '';
+
+/* The master secret used to live in the address bar - the page was opened as
+ * admin.html?secret=THEPASSWORD - which put it in browser history, in any
+ * screenshot of this screen, and in the server's access log.
+ *
+ * An existing bookmark with ?secret= still works exactly as before, so nothing
+ * anybody uses today breaks. The difference is that the secret is taken out of
+ * the address the moment the page loads, and kept in this tab only. Close the
+ * tab and it is gone. */
+let ADMIN_SECRET = '';
+(function initSecret() {
+  const qs = new URLSearchParams(window.location.search);
+  const fromUrl = qs.get('secret');
+  if (fromUrl) {
+    ADMIN_SECRET = fromUrl;
+    sessionStorage.setItem('mw_admin_secret', fromUrl);
+    qs.delete('secret');
+    const clean = window.location.pathname + (qs.toString() ? '?' + qs : '');
+    try { history.replaceState(null, '', clean); } catch (e) {}
+    return;
+  }
+  ADMIN_SECRET = sessionStorage.getItem('mw_admin_secret') || '';
+  if (!ADMIN_SECRET) {
+    ADMIN_SECRET = window.prompt('Admin secret:') || '';
+    if (ADMIN_SECRET) sessionStorage.setItem('mw_admin_secret', ADMIN_SECRET);
+  }
+})();
+
+/* A wrong or expired secret must not look like a broken page. Forget it so the
+ * next load asks again instead of failing silently forever. */
+function forgetSecret() {
+  sessionStorage.removeItem('mw_admin_secret');
+  ADMIN_SECRET = '';
+}
+
+/* This page has twenty separate fetch calls and no shared wrapper, and one of
+ * them is on a timer. Rather than edit twenty call sites, watch the responses
+ * in one place: the first 401 from the API says so once and forgets the bad
+ * secret, so a reload asks for it again. It says it ONCE - the polling call
+ * would otherwise put an alert on the screen every few seconds, and it does
+ * not reload by itself, because a cancelled prompt would then loop. */
+(function watchForUnauthorized() {
+  const realFetch = window.fetch.bind(window);
+  let told = false;
+  window.fetch = function (input, init) {
+    return realFetch(input, init).then(function (res) {
+      const url = String((input && input.url) || input || '');
+      if (res.status === 401 && url.indexOf('/api/') !== -1) {
+        forgetSecret();
+        if (!told) {
+          told = true;
+          window.alert('That admin secret was not accepted. Reload this page to enter it again.');
+        }
+      }
+      return res;
+    });
+  };
+})();
 
 // Map setup - centered on Port-au-Prince
 const map = L.map('map').setView([18.5425, -72.3386], 13);
