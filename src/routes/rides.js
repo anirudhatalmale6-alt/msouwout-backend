@@ -344,13 +344,30 @@ router.get('/reports/money', async (req, res) => {
 //
 // Only rides still searching, and only recent ones: an order from this morning is
 // not something a driver should be offered at eight in the evening.
+/* Every spelling either side of the wire has ever used for the same two
+   things. Returns null for anything unrecognised, so an unknown value means
+   "no filter" rather than "match nothing". */
+function normVehicle(v) {
+  const x = String(v || '').trim().toLowerCase();
+  if (!x) return null;
+  if (['moto', 'motorcycle', 'motocyclette', 'mototaxi', 'motto'].includes(x)) return 'moto';
+  if (['car', 'machin', 'voiture', 'auto', 'automobile'].includes(x)) return 'car';
+  return null;
+}
+
 router.get('/available', async (req, res) => {
   try {
-    const rideType = req.query.ride_type;
+    /* A RIDE is 'moto' or 'car'. A DRIVER is 'motorcycle' or 'car' - the two
+       halves of the system have always spelled it differently. The old check
+       was `=== 'moto'`, so a driver app sending its own vehicle_type of
+       "motorcycle" matched neither arm and the filter silently switched itself
+       off: the moto driver got car rides and nothing looked broken. Normalise
+       instead of trusting the spelling. */
+    const rideType = normVehicle(req.query.ride_type);
     const minutes = Math.min(parseInt(req.query.minutes, 10) || 60, 720);
     const params = [];
     let where = `WHERE r.status = 'searching' AND r.created_at > NOW() - INTERVAL '${minutes} minutes'`;
-    if (rideType === 'car' || rideType === 'moto') {
+    if (rideType) {
       params.push(rideType);
       where += ` AND r.ride_type = $${params.length}`;
     }

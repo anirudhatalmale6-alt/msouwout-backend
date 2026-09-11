@@ -40,9 +40,25 @@ router.post('/', async (req, res) => {
       syndicate || null, Number.isFinite(yearInt) ? yearInt : null
     ]);
 
+    /* Only say it worked if a row actually came back.
+     *
+     * Found while testing dispatch: when the INSERT did not produce a row, this
+     * still answered 201 with "Driver registration submitted successfully" and
+     * simply no driver field - JSON drops an undefined key, so the reply looked
+     * almost normal. A man signs up, is told he is registered, and no record of
+     * him exists anywhere. He waits for a call that cannot come.
+     *
+     * Same family as the .catch() that used to show the waitlist card on a
+     * failed ride order: a success message is a claim, and a claim has to be
+     * checked before it is made. */
+    const created = result.rows && result.rows[0];
+    if (!created || !created.id) {
+      console.error('Driver registration produced no row for', phone);
+      return res.status(500).json({ error: 'Enskripsyon an pa anrejistre. Tanpri eseye ankò.' });
+    }
     res.status(201).json({
       message: 'Driver registration submitted successfully. You will be contacted for verification.',
-      driver: result.rows[0]
+      driver: created
     });
   } catch (err) {
     console.error('Error registering driver:', err);
