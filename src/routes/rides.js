@@ -528,6 +528,53 @@ router.patch('/:id/reject', async (req, res) => {
 });
 
 // PATCH /api/rides/:id/start — Driver starts ride (PIN required)
+/* PATCH /api/rides/:id/arrived — the driver says he is outside.
+ *
+ * His question: "How can we let the customer know when the driver arrived
+ * without having to call?" The passenger's page is already open and already
+ * polling every ten seconds once a ride is accepted, so nothing needs to be
+ * pushed anywhere - the driver only needs somewhere to say it.
+ *
+ * Deliberately a timestamp and not a new status. searching -> accepted ->
+ * in_progress -> completed is switched on in several places; a fifth value
+ * would change all of them. arrived_at only adds.
+ *
+ * Idempotent: a driver who taps twice does not move the time. The passenger
+ * would see the "he is outside" alert fire again for no reason, and on a
+ * ride that is already under way it would be simply wrong.
+ */
+router.patch('/:id/arrived', async (req, res) => {
+  try {
+    const ride = await pool.query('SELECT * FROM ride_requests WHERE id = $1', [req.params.id]);
+    if (ride.rows.length === 0) return res.status(404).json({ error: 'Kous pa jwenn' });
+    if (ride.rows[0].status !== 'accepted') {
+      return res.status(400).json({ error: 'Kous la dwe aksepte anvan' });
+    }
+    /* Only the driver who took the ride may mark it. Sent by the driver app;
+       checked here because the endpoint is reachable by anybody. */
+    const { driver_id } = req.body || {};
+    if (driver_id && ride.rows[0].driver_id && driver_id !== ride.rows[0].driver_id) {
+      return res.status(403).json({ error: 'Se pa kous ou' });
+    }
+    if (ride.rows[0].arrived_at) {
+      return res.json({ arrived_at: ride.rows[0].arrived_at, already: true });
+    }
+    const out = await pool.query(
+      `UPDATE ride_requests SET arrived_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND status = 'accepted' AND arrived_at IS NULL
+       RETURNING arrived_at`,
+      [req.params.id]
+    );
+    if (!out.rows.length) {
+      return res.status(409).json({ error: 'Kous la chanje' });
+    }
+    res.json({ arrived_at: out.rows[0].arrived_at, message: 'Pasaje a avize' });
+  } catch (err) {
+    console.error('Arrived error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.patch('/:id/start', async (req, res) => {
   try {
     const { pin } = req.body;

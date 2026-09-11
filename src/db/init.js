@@ -317,6 +317,16 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS passenger_name VARCHAR(255);
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS passenger_phone VARCHAR(50);
       `);
+      /* "How can we let the customer know when the driver arrived without
+         having to call?" - his question, 11 Sep 2026.
+         A timestamp rather than a new status on purpose. The status machine is
+         searching -> accepted -> in_progress -> completed and several places
+         switch on it; adding a fifth value would change behaviour in all of
+         them. A column only adds something, so nothing that reads status can
+         be surprised by it. */
+      await client.query(`
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP WITH TIME ZONE;
+      `);
       // Money split, payout & cancellation tracking (confirmed 2026-07-18)
       await client.query(`
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS driver_dash_share NUMERIC(10,2) NOT NULL DEFAULT 0;
