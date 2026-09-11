@@ -83,9 +83,32 @@ jobs:
               sys.exit("the database is not connected: %s" % (h,))
           print("health ok, database connected")
           '
+          # GET /api/businesses is the ADMIN list - every business owner's name,
+          # phone and address - and it is behind the admin lock now. This step
+          # used to assert 200 on it, from the days when it answered anybody, so
+          # after the lock shipped it failed every deploy. A check that cries
+          # wolf on a good deploy is worse than no check: it teaches whoever is
+          # watching to ignore a red build.
+          #
+          # Turned round to assert the opposite, which is the thing actually
+          # worth proving on every release: the lock is ON.
           code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$BASE_URL/api/businesses")"
-          echo "/api/businesses -> $code"
-          [ "$code" = "200" ] || { echo "/api/businesses did not return 200"; exit 1; }
+          echo "GET /api/businesses (no credential) -> $code"
+          case "$code" in
+            401|403) echo "admin list is locked, as it should be" ;;
+            *) echo "GET /api/businesses answered $code without a credential - the admin lock is NOT on"; exit 1 ;;
+          esac
+
+          # And the public half of the same route must still work, or business
+          # sign-up is dead and nobody would notice. 400 is the route open and
+          # validating an empty body; 401/403 would mean the lock caught too much.
+          code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST \
+            -H 'Content-Type: application/json' -d '{}' "$BASE_URL/api/businesses")"
+          echo "POST /api/businesses (empty body) -> $code"
+          case "$code" in
+            400|422) echo "business sign-up still open" ;;
+            *) echo "POST /api/businesses answered $code - sign-up may be broken"; exit 1 ;;
+          esac
 
       # Apple rejected 1.0 (7) because the reviewer could not log in. The demo
       # accounts live in the database, so they die with it. Prove a reviewer can
