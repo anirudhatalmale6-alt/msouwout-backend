@@ -371,17 +371,51 @@ router.get('/available', async (req, res) => {
       params.push(rideType);
       where += ` AND r.ride_type = $${params.length}`;
     }
+    /* Nearest first, when we know where the driver is.
+     *
+     * The driver app sends lat/lng now, so it can ask for the board sorted by
+     * how far each pickup is from him. Straight-line distance, not road
+     * distance: it is one arithmetic expression, it needs no third party, and
+     * for choosing between "two streets away" and "across the city" it is
+     * right often enough. Road distance would be better and is not worth an API
+     * bill per poll per driver.
+     *
+     * ⛔ A ride with no pickup coordinates is NOT dropped. Plenty of orders are
+     * placed by typing an address that never geocoded, and hiding those from
+     * every driver would quietly lose real fares. They sort last.
+     *
+     * 6371 is the earth's radius in km; the cos() term is there because a
+     * degree of longitude narrows as you leave the equator. */
+    let order = 'r.created_at DESC';
+    const dLat = parseFloat(req.query.lat), dLng = parseFloat(req.query.lng);
+    let distSelect = 'NULL::float AS km_away';
+    if (Number.isFinite(dLat) && Number.isFinite(dLng) &&
+        Math.abs(dLat) <= 90 && Math.abs(dLng) <= 180 && (dLat !== 0 || dLng !== 0)) {
+      params.push(dLat); const pLat = params.length;
+      params.push(dLng); const pLng = params.length;
+      distSelect = `CASE WHEN r.pickup_lat IS NULL OR r.pickup_lng IS NULL THEN NULL ELSE
+          6371 * 2 * asin(sqrt(
+            power(sin(radians(r.pickup_lat - $${pLat}) / 2), 2) +
+            cos(radians($${pLat})) * cos(radians(r.pickup_lat)) *
+            power(sin(radians(r.pickup_lng - $${pLng}) / 2), 2)
+          )) END AS km_away`;
+      /* NULLS LAST so a ride we cannot place still reaches every driver,
+         underneath the ones we can. */
+      order = 'km_away ASC NULLS LAST, r.created_at DESC';
+    }
+
     const result = await pool.query(
       `SELECT r.id, r.tracking_code, r.customer_name, r.customer_phone,
               r.pickup_address, r.dropoff_address, r.pickup_lat, r.pickup_lng,
               r.dropoff_lat, r.dropoff_lng, r.ride_type, r.distance_km, r.duration_min,
               r.price, r.driver_earning, r.total_with_protection, r.payment_method,
-              r.created_at
+              r.created_at,
+              ${distSelect}
        FROM ride_requests r ${where}
-       ORDER BY r.created_at DESC LIMIT 20`,
+       ORDER BY ${order} LIMIT 20`,
       params
     );
-    res.json({ rides: result.rows, total: result.rows.length });
+    res.json({ rides: result.rows, total: result.rows.length, sorted_by: order.startsWith('km') ? 'distance' : 'time' });
   } catch (err) {
     console.error('Available rides error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
