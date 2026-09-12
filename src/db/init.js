@@ -426,6 +426,17 @@ async function runMigrations(client) {
       // ADMIN_SECRET (which is unreadable from outside the Render dashboard).
       await client.query(`
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(50);
+        /* Online / offline.
+         *
+         * is_online is what the driver chose. last_seen_at is when his app last
+         * spoke to us. Dispatch needs BOTH: a driver who switched himself on
+         * this morning and whose battery died at noon is still "online" by his
+         * own choice, and every ride offered to him is a ride nobody answers.
+         * The truth is the AND of the two, which is why the timestamp is not
+         * optional. */
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS is_online BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS went_online_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS city VARCHAR(120);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_make VARCHAR(100);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(100);

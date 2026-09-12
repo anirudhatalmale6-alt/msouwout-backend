@@ -310,6 +310,85 @@ router.get('/stats', async (req, res) => {
 });
 
 // PATCH /api/drivers/:id/approve
+/* PATCH /api/drivers/:id/presence — the driver says he is working, or not.
+ *
+ * Called by the switch in the driver app, and again on a heartbeat while he is
+ * online. Both jobs on one route on purpose: a driver who is online is, by
+ * definition, an app that is still talking to us, and splitting "set my status"
+ * from "I am still here" invites the two to disagree.
+ *
+ * ⛔ Deliberately NOT behind the admin lock. A driver changing his own status is
+ * the most ordinary thing in the app; it takes his own id, like every other
+ * driver-facing route.
+ */
+router.patch('/:id/presence', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return res.status(404).json({ error: 'Chofè pa jwenn' });
+    }
+    /* Absent means "just a heartbeat, do not change what he chose". Only an
+       explicit true/false moves the switch. */
+    const hasChoice = req.body && typeof req.body.online === 'boolean';
+    const online = hasChoice ? req.body.online : null;
+
+    const out = await pool.query(
+      `UPDATE drivers
+          SET is_online = COALESCE($2, is_online),
+              last_seen_at = NOW(),
+              went_online_at = CASE
+                WHEN $2 IS TRUE AND is_online IS NOT TRUE THEN NOW()
+                WHEN $2 IS FALSE THEN NULL
+                ELSE went_online_at END
+        WHERE id = $1 AND status = 'approved'
+    RETURNING id, is_online, last_seen_at, went_online_at`,
+      [id, online]
+    );
+    if (!out.rows.length) {
+      return res.status(404).json({ error: 'Chofè pa jwenn oswa pa apwouve' });
+    }
+    res.json(out.rows[0]);
+  } catch (err) {
+    console.error('Presence error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+/* How many drivers are actually working right now, by vehicle.
+ *
+ * You cannot run a dispatch business without this number, and "how many said
+ * they were online" is not it - a phone that died an hour ago still says yes.
+ * Counted the same way dispatch counts: chose online AND seen recently.
+ */
+router.get('/presence/summary', adminPass, async (req, res) => {
+  try {
+    const out = await pool.query(
+      `SELECT vehicle_type,
+              COUNT(*) FILTER (WHERE is_online AND last_seen_at > NOW() - INTERVAL '5 minutes') AS working,
+              COUNT(*) FILTER (WHERE is_online) AS say_online,
+              COUNT(*) AS approved
+         FROM drivers WHERE status = 'approved'
+        GROUP BY vehicle_type ORDER BY vehicle_type`
+    );
+    const rows = out.rows.map(r => ({
+      vehicle_type: r.vehicle_type,
+      working: Number(r.working),
+      /* The gap between these two is the interesting number: drivers who think
+         they are available and whose phone stopped answering. */
+      stale: Number(r.say_online) - Number(r.working),
+      approved: Number(r.approved)
+    }));
+    res.json({
+      by_vehicle: rows,
+      working_total: rows.reduce((a, r) => a + r.working, 0),
+      stale_total: rows.reduce((a, r) => a + r.stale, 0)
+    });
+  } catch (err) {
+    console.error('Presence summary error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.patch('/:id/approve', async (req, res) => {
   try {
     const { id } = req.params;
