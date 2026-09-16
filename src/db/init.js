@@ -470,6 +470,36 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ALTER COLUMN dropoff_lat DROP NOT NULL;
         ALTER TABLE ride_requests ALTER COLUMN dropoff_lng DROP NOT NULL;
       `);
+      /* Payments (Stage 1). Shaped around a SUBJECT rather than a ride, so the
+         same table serves orders and tickets later and Stage 2 has one place to
+         mirror into the central HaitiBiznis ledger. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS payments (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          provider VARCHAR(40) NOT NULL DEFAULT 'solutionip',
+          reference_id VARCHAR(80) NOT NULL UNIQUE,
+          provider_ref VARCHAR(120),
+          subject_type VARCHAR(20) NOT NULL DEFAULT 'ride',
+          subject_id UUID,
+          amount INTEGER NOT NULL,
+          currency VARCHAR(3) NOT NULL DEFAULT 'HTG',
+          method VARCHAR(20) NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'pending',
+          payment_url TEXT,
+          payer_phone VARCHAR(50),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_checked_at TIMESTAMP WITH TIME ZONE,
+          paid_at TIMESTAMP WITH TIME ZONE,
+          last_response JSONB,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_payments_subject ON payments (subject_type, subject_id);
+        CREATE INDEX IF NOT EXISTS idx_payments_status  ON payments (status);
+        CREATE INDEX IF NOT EXISTS idx_payments_pending ON payments (status, last_checked_at);
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid';
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS payment_id UUID REFERENCES payments(id);
+      `);
       // Default admin password for the driver-review dashboard. Jeffery can change it
       // later; seeded once and never overwritten.
       await client.query(`

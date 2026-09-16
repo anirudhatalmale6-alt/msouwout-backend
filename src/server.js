@@ -98,7 +98,14 @@ app.get('/api/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`MsouWout Geofencing API running on port ${PORT}`);
   initDatabase()
-    .then(() => { dbReady = true; console.log('Database initialized successfully.'); })
+    .then(() => {
+      dbReady = true; console.log('Database initialized successfully.');
+      /* Only after the tables exist. The gateway never calls us back, so this
+         is what turns a payment finished on the gateway's own page into a ride
+         marked paid — including when the passenger closed the app to do it. */
+      require('./services/payments').startPoller();
+      console.log('Payment poller started.');
+    })
     .catch(err => { dbError = err; console.error('Database init failed:', err.message); });
 });
 
