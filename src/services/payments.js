@@ -107,15 +107,77 @@ function getProvider(name) {
   return PROVIDERS[name] || null;
 }
 
-/* Which methods a caller may offer, asked of the providers rather than
-   hardcoded, so a new provider's methods appear without touching the apps. */
-function availableMethods() {
+/* --- which providers are switched on -------------------------------------
+   Stored in service_config('payment_providers'), not in this file, so a
+   provider or a single method can be turned off from an admin screen without
+   a code change or a redeploy. Shape:
+
+     { "solutionip": { "enabled": true,
+                       "methods": { "moncash": true, "natcash": false, ... } } }
+
+   Cached briefly: this is read on every payment, but switching MonCash off
+   during an outage should take effect in seconds, not on the next restart.
+   ------------------------------------------------------------------------- */
+let cfgCache = null, cfgAt = 0;
+const CFG_TTL_MS = 30 * 1000;
+
+async function providerConfig({ fresh } = {}) {
+  if (!fresh && cfgCache && (Date.now() - cfgAt) < CFG_TTL_MS) return cfgCache;
+  try {
+    const q = await pool.query(
+      `SELECT value FROM service_config WHERE key = 'payment_providers'`);
+    cfgCache = (q.rows[0] && q.rows[0].value) || {};
+  } catch (err) {
+    /* If the config cannot be read, fall back to "everything registered is on"
+       rather than refusing all payments because of a settings lookup. */
+    console.error('payment provider config unreadable:', err.message);
+    cfgCache = {};
+  }
+  cfgAt = Date.now();
+  return cfgCache;
+}
+
+function invalidateProviderConfig() { cfgCache = null; cfgAt = 0; }
+
+function isEnabled(cfg, providerName, method) {
+  const c = cfg[providerName];
+  if (c === undefined) return true;          // registered but never configured
+  if (c.enabled === false) return false;
+  if (c.methods && c.methods[method] === false) return false;
+  return true;
+}
+
+/* Which methods a caller may offer. Asked of the providers AND the config, so
+   the apps show exactly what is currently switched on. */
+async function availableMethods() {
+  const cfg = await providerConfig();
+  return Object.values(PROVIDERS).flatMap(p =>
+    p.methods
+      .filter(m => isEnabled(cfg, p.name, m))
+      .map(m => ({ provider: p.name, method: m })));
+}
+
+/* Every method this build knows about, on or off. For the admin screen, which
+   has to be able to show you a switch for something currently switched off. */
+function allMethods() {
   return Object.values(PROVIDERS).flatMap(p =>
     p.methods.map(m => ({ provider: p.name, method: m })));
 }
 
-function providerForMethod(method) {
-  return Object.values(PROVIDERS).find(p => p.methods.includes(method)) || null;
+async function providerForMethod(method) {
+  const cfg = await providerConfig();
+  return Object.values(PROVIDERS).find(
+    p => p.methods.includes(method) && isEnabled(cfg, p.name, method)) || null;
+}
+
+async function setProviderConfig(next) {
+  await pool.query(
+    `INSERT INTO service_config (key, value, updated_at)
+     VALUES ('payment_providers', $1::jsonb, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_at = NOW()`,
+    [JSON.stringify(next)]);
+  invalidateProviderConfig();
+  return providerConfig({ fresh: true });
 }
 
 /* A reference the gateway will accept and we can find again.
@@ -147,7 +209,8 @@ function newReference(prefix) {
  * Start a payment. Records it BEFORE sending the payer anywhere, so a payment
  * that succeeds while the app is closed is still something we know to ask about.
  */
-async function startPayment({ subject_type, subject_id, amount, method, payer_phone, currency }) {
+async function startPayment({ subject_type, subject_id, amount, method, payer_phone,
+                              currency, platform, user_id, metadata }) {
   const cur = (currency || 'HTG').toUpperCase();
   const amt = Math.ceil(Number(amount));
 
@@ -158,10 +221,38 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
     return { ok: false, code: 'below_minimum',
              error: `The gateway will not take less than ${MIN_HTG} HTG` };
   }
-  const provider = providerForMethod(method);
+  const provider = await providerForMethod(method);
   if (!provider) {
-    return { ok: false, code: 'bad_method',
-             error: `Unknown payment method. Available: ${availableMethods().map(m => m.method).join(', ')}` };
+    const on = (await availableMethods()).map(m => m.method);
+    const known = allMethods().some(m => m.method === method);
+    return known
+      ? { ok: false, code: 'method_disabled',
+          error: `${method} is switched off. Available: ${on.join(', ') || 'none'}` }
+      : { ok: false, code: 'bad_method',
+          error: `Unknown payment method. Available: ${on.join(', ') || 'none'}` };
+  }
+
+  /* Tapping Pay twice must not start two payments.
+   *
+   * Without this, a passenger on a slow connection who taps again gets a
+   * SECOND gateway transaction for the same ride - two payment pages, and a
+   * real chance of paying twice. If there is already a live attempt for the
+   * same subject at the same amount and method, hand back that one.
+   *
+   * Deliberately NOT keyed on time: a payment page opened four minutes ago is
+   * still the page the passenger is looking at. It is keyed on the attempt
+   * still being pending, which is exactly what "not finished yet" means. */
+  if (subject_id) {
+    const live = await pool.query(
+      `SELECT * FROM payments
+        WHERE subject_type = $1 AND subject_id = $2
+          AND status = 'pending' AND amount = $3 AND method = $4
+          AND payment_url IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      [subject_type || 'ride', String(subject_id), amt, method]);
+    if (live.rows.length) {
+      return { ok: true, payment: live.rows[0], reused: true };
+    }
   }
 
   /* reference_id is UNIQUE. Even with crypto randomness, the right response to
@@ -173,11 +264,15 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
     try {
       const ins = await pool.query(
         `INSERT INTO payments (provider, reference_id, subject_type, subject_id,
-                               amount, currency, method, status, payer_phone)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8)
+                               amount, currency, method, status, payer_phone,
+                               platform, user_id, metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,$11::jsonb)
          RETURNING *`,
-        [provider.name, reference_id, subject_type || 'ride', subject_id || null,
-         amt, cur, method, payer_phone || null]
+        [provider.name, reference_id, subject_type || 'ride',
+         subject_id ? String(subject_id) : null,
+         amt, cur, method, payer_phone || null,
+         platform || 'msouwout', user_id || null,
+         JSON.stringify(metadata || {})]
       );
       payment = ins.rows[0];
     } catch (err) {
@@ -308,7 +403,7 @@ async function getPayment({ reference_id, id }) {
 async function paymentsForSubject(subject_type, subject_id) {
   const q = await pool.query(
     `SELECT * FROM payments WHERE subject_type=$1 AND subject_id=$2
-      ORDER BY created_at DESC`, [subject_type, subject_id]);
+      ORDER BY created_at DESC`, [subject_type, String(subject_id)]);
   return q.rows;
 }
 
@@ -351,7 +446,8 @@ function stopPoller() {
 
 module.exports = {
   startPayment, checkPayment, getPayment, paymentsForSubject,
-  availableMethods, providerForMethod, newReference,
+  availableMethods, allMethods, providerForMethod, newReference,
+  providerConfig, setProviderConfig, invalidateProviderConfig,
   startPoller, stopPoller,
   MIN_HTG, MAX_ATTEMPTS, PROVIDERS
 };

@@ -500,6 +500,35 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid';
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS payment_id UUID REFERENCES payments(id);
       `);
+      /* Ledger traceability, 16 Sep 2026.
+         Jeffery asked whether every transaction can carry a user id, the
+         platform, the service type and the gateway's own id. Three of those
+         needed adding, and one needed FIXING:
+
+         subject_id was UUID. MsouWout is Postgres and uses UUIDs, but
+         MyPlopPlop, Tikè Lakay and the rest are MongoDB, whose ids are 24-char
+         hex ObjectIds - they do not fit a UUID column at all. So the one table
+         meant to serve the whole ecosystem could only ever have held rides.
+         Widened to text before any real row exists, which is the cheap moment. */
+      await client.query(`
+        ALTER TABLE payments ALTER COLUMN subject_id TYPE VARCHAR(64) USING subject_id::text;
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS platform VARCHAR(30) NOT NULL DEFAULT 'msouwout';
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS user_id VARCHAR(64);
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+        CREATE INDEX IF NOT EXISTS idx_payments_platform ON payments (platform, subject_type);
+        CREATE INDEX IF NOT EXISTS idx_payments_user     ON payments (user_id);
+        CREATE INDEX IF NOT EXISTS idx_payments_provref  ON payments (provider_ref);
+      `);
+      /* Which providers and methods are on. Stored in service_config, the same
+         table pricing and the admin password already use, so it is changed from
+         an admin screen rather than by editing code and redeploying.
+         Seeded once and never overwritten. */
+      await client.query(`
+        INSERT INTO service_config (key, value)
+        VALUES ('payment_providers',
+                '{"solutionip":{"enabled":true,"methods":{"moncash":true,"natcash":true,"kashpaw":true,"all":true}}}'::jsonb)
+        ON CONFLICT (key) DO NOTHING;
+      `);
       // Default admin password for the driver-review dashboard. Jeffery can change it
       // later; seeded once and never overwritten.
       await client.query(`

@@ -56,6 +56,11 @@ const ADMIN_ONLY = [
   // Trip review
   ['PATCH', /^\/api\/trips\/[^/]+\/(approve|reject)$/],
 
+  // Turning a payment provider on or off decides whether anybody can pay at
+  // all, and which of Jeffery's gateways the money goes through.
+  ['GET', /^\/api\/payments\/admin\/providers\/?$/],
+  ['PUT', /^\/api\/payments\/admin\/providers\/?$/],
+
   // Medical claims and settlements move money.
   ['PATCH', /^\/api\/medical\/(claims|settlement)\/[^/]+$/],
   ['POST', /^\/api\/medical\/settlement$/],

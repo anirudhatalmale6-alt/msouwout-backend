@@ -35,6 +35,9 @@ function publicView(p) {
     payment_url: p.payment_url,
     subject_type: p.subject_type,
     subject_id: p.subject_id,
+    platform: p.platform,
+    user_id: p.user_id,
+    provider_ref: p.provider_ref,
     paid_at: p.paid_at,
     created_at: p.created_at
   };
@@ -42,14 +45,60 @@ function publicView(p) {
 
 /* Must stay ABOVE '/:reference_id' or Express reads "methods" as a reference —
    the same trap that /available hit on the rides router. */
-router.get('/methods', (req, res) => {
-  res.json({ methods: pay.availableMethods(), minimum_htg: pay.MIN_HTG });
+router.get('/methods', async (req, res) => {
+  try {
+    res.json({ methods: await pay.availableMethods(), minimum_htg: pay.MIN_HTG });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not read payment methods' });
+  }
+});
+
+/* Admin: see and change which providers/methods are switched on.
+   NOT guarded here. The lock is the single adminOnly middleware in
+   middleware/adminOnly.js, which fails closed and carries the list of every
+   administrator-only path - fitting a second, different lock on these two
+   routes is exactly how this project ended up with unguarded back doors to
+   guarded actions. Both paths are added to ADMIN_ONLY there. */
+router.get('/admin/providers', async (req, res) => {
+  try {
+    res.json({ all: pay.allMethods(), config: await pay.providerConfig({ fresh: true }),
+               enabled: await pay.availableMethods() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/admin/providers', async (req, res) => {
+  try {
+    const next = req.body && req.body.config;
+    if (!next || typeof next !== 'object') {
+      return res.status(400).json({ error: 'config object required' });
+    }
+    /* Refuse to switch everything off. A payment screen with no methods is
+       indistinguishable from a broken one, and it would be found by a
+       passenger rather than by us. */
+    const known = pay.allMethods();
+    const stillOn = known.filter(m => {
+      const c = next[m.provider];
+      if (c === undefined) return true;
+      if (c.enabled === false) return false;
+      return !(c.methods && c.methods[m.method] === false);
+    });
+    if (!stillOn.length) {
+      return res.status(400).json({
+        error: 'At least one payment method must stay switched on' });
+    }
+    const saved = await pay.setProviderConfig(next);
+    res.json({ ok: true, config: saved, enabled: await pay.availableMethods() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post('/create', async (req, res) => {
   try {
     const { subject_type, subject_id, ride_id, amount, payment_method, method,
-            payer_phone, currency } = req.body || {};
+            payer_phone, currency, platform, user_id, metadata } = req.body || {};
 
     const chosen = method || payment_method;
     const subject = subject_type || (ride_id ? 'ride' : 'ride');
@@ -79,7 +128,8 @@ router.post('/create', async (req, res) => {
 
     const out = await pay.startPayment({
       subject_type: subject, subject_id: subjectId,
-      amount: amountToCharge, method: chosen, payer_phone, currency
+      amount: amountToCharge, method: chosen, payer_phone, currency,
+      platform: platform || 'msouwout', user_id, metadata
     });
 
     if (!out.ok) {
@@ -95,7 +145,7 @@ router.post('/create', async (req, res) => {
         [subjectId, p.id, p.method]);
     }
 
-    res.json({ success: true, ...publicView(p) });
+    res.json({ success: true, reused: !!out.reused, ...publicView(p) });
   } catch (err) {
     console.error('Payment create error:', err);
     res.status(500).json({ error: 'Payment service unavailable' });
