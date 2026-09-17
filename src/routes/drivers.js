@@ -527,6 +527,53 @@ router.post('/:id/location', async (req, res) => {
   }
 });
 
+/* The referral-partner list, read by the driver sign-up form and the partner
+ * dashboard.
+ *
+ * Both of those used to carry the partners as hardcoded <option> tags, so every
+ * new partner - StarFlex being the one that prompted this - needed a code change
+ * and a deploy. The referral_partners table already existed and nothing read it.
+ * Public on purpose: the sign-up form is used by drivers who carry no credential,
+ * and a partner's name and code are printed on their own flyers anyway. */
+router.get('/partners', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT code, name, commission_pct FROM referral_partners
+        WHERE is_active = true ORDER BY name`);
+    res.json({ partners: r.rows });
+  } catch (err) {
+    /* Never let this break the sign-up form: the page keeps its own fallback
+       list, so an empty answer costs a partner option, not a driver. */
+    console.error('partners list failed:', err.message);
+    res.json({ partners: [] });
+  }
+});
+
+/* Add or update one. Guarded like the rest of /admin/* in this file. */
+router.post('/admin/partners', adminPass, async (req, res) => {
+  try {
+    const { code, name, contact_name, contact_phone, commission_pct, is_active } = req.body || {};
+    if (!code || !name) return res.status(400).json({ error: 'code and name are required' });
+    const r = await pool.query(
+      `INSERT INTO referral_partners (code, name, contact_name, contact_phone, commission_pct, is_active)
+       VALUES ($1,$2,$3,$4,$5,COALESCE($6,true))
+       ON CONFLICT (code) DO UPDATE SET
+         name = EXCLUDED.name,
+         contact_name = COALESCE(EXCLUDED.contact_name, referral_partners.contact_name),
+         contact_phone = COALESCE(EXCLUDED.contact_phone, referral_partners.contact_phone),
+         commission_pct = EXCLUDED.commission_pct,
+         is_active = EXCLUDED.is_active,
+         updated_at = NOW()
+       RETURNING *`,
+      [String(code).trim(), String(name).trim(), contact_name || null,
+       contact_phone || null, Number(commission_pct) || 0,
+       is_active === undefined ? true : !!is_active]);
+    res.json({ ok: true, partner: r.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/drivers/partner-stats - Stats by referral partner
 router.get('/partner-stats', async (req, res) => {
   try {
