@@ -25,9 +25,12 @@ on:
         required: true
         default: srv-d7o1inl7vvec739fslu0
       health_path:
+        # Verified live 20 Sep: haitibiznis-api answers on /health and returns
+        # 404 on /api/health, so the old default would have failed the check
+        # after a perfectly good deploy. Confirm the path before changing this.
         description: Health path to verify after deploy
         required: false
-        default: /api/health
+        default: /health
 
 concurrency:
   group: render-deploy-other
