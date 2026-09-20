@@ -2,17 +2,28 @@ name: Deploy another Render service
 
 # Render's GitHub push webhook silently stopped firing for some services on this
 # account (see deploy.yml). This manually-triggered workflow deploys any service
-# on the same Render account by name, using the RENDER_API_KEY secret, and waits
-# for it to reach `live`. Used to unblock myplopplop-api when its auto-deploy
-# stopped delivering commits.
+# on the same Render account, using the RENDER_API_KEY secret, and waits for it
+# to reach `live`. Used to unblock myplopplop-api when its auto-deploy stopped
+# delivering commits.
+#
+# 20 Sep 2026: resolving BY NAME turned out to be a trap. haitibiznis-api was
+# renamed in the dashboard to "e.HaitiBiznis.com" - someone pasted the custom
+# domain into the Name field - so `?name=haitibiznis-api` matched nothing and
+# every deploy of that service failed at the first step. The blueprint still
+# said `name: haitibiznis-api`, so the repo looked right while the deploy was
+# dead. A service ID never changes and nobody can rename it, so it is now the
+# preferred input; a name still works for convenience.
+#
+# The health check used to build the URL from the name too, which broke for the
+# same reason. It now asks Render what the service's real URL is.
 
 on:
   workflow_dispatch:
     inputs:
       service_name:
-        description: Render service name to deploy
+        description: Render service ID (srv-...) or service name
         required: true
-        default: myplopplop-api
+        default: srv-d7o1inl7vvec739fslu0
       health_path:
         description: Health path to verify after deploy
         required: false
@@ -34,14 +45,30 @@ jobs:
       - name: Guard against a missing key
         run: '[ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }'
 
-      - name: Resolve service id by name
+      - name: Resolve the service, and ask Render for its real URL
         id: resolve
         run: |
           set -euo pipefail
-          sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d[0].get("service",d[0]))["id"] if d else "")')"
-          [ -n "$sid" ] || { echo "no service named $SERVICE_NAME"; exit 1; }
-          echo "Resolved $SERVICE_NAME -> $sid"
+          case "$SERVICE_NAME" in
+            srv-*)
+              # An ID is authoritative - no lookup, nothing to rename out from under us.
+              sid="$SERVICE_NAME" ;;
+            *)
+              sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+                "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=1" \
+                | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d[0].get("service",d[0]))["id"] if d else "")')"
+              [ -n "$sid" ] || { echo "No service NAMED '$SERVICE_NAME'. It may have been renamed in the dashboard - pass its srv-... ID instead (Render shows it under the service title)."; exit 1; } ;;
+          esac
+
+          # Never build the health URL from the name: the name is exactly the
+          # thing that goes stale. Ask for the URL the service actually serves.
+          svc="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/$sid")"
+          url="$(printf '%s' "$svc" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("serviceDetails") or {}).get("url",""))')"
+          name="$(printf '%s' "$svc" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
+          [ -n "$url" ] || { echo "Could not read a URL for $sid"; exit 1; }
+          echo "Deploying '$name' ($sid) -> $url"
           echo "sid=$sid" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Trigger deploy
         id: trigger
@@ -71,6 +98,7 @@ jobs:
       - name: Verify health
         run: |
           set -euo pipefail
-          code="$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 --retry-all-errors -m 60 "https://$SERVICE_NAME.onrender.com$HEALTH_PATH")"
-          echo "https://$SERVICE_NAME.onrender.com$HEALTH_PATH -> $code"
+          base="${{ steps.resolve.outputs.url }}"
+          code="$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 10 --retry-all-errors -m 60 "$base$HEALTH_PATH")"
+          echo "$base$HEALTH_PATH -> $code"
           [ "$code" = "200" ] || { echo "health check did not return 200"; exit 1; }
