@@ -183,6 +183,26 @@ router.get('/ride/:rideId', async (req, res) => {
   }
 });
 
+/* Recent payments, newest first. There was no way to answer "did the money
+   arrive" without already knowing the reference - and the reference lives in
+   the payer's browser, not mine. Needed for every live test from here on.
+   MUST stay above /:reference_id, which would otherwise swallow "admin".
+   Guarded by the single adminOnly list, not a second lock of its own. */
+router.get('/admin/recent', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const rows = await pay.recentPayments({
+      limit,
+      subject_type: req.query.subject_type || null,
+      platform: req.query.platform || null
+    });
+    res.json({ count: rows.length, payments: rows.map(publicView) });
+  } catch (err) {
+    console.error('Recent payments error:', err);
+    res.status(500).json({ error: 'Payment service unavailable' });
+  }
+});
+
 router.get('/:reference_id', async (req, res) => {
   try {
     const p = await pay.getPayment({ reference_id: req.params.reference_id });

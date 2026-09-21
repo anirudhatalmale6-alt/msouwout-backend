@@ -400,6 +400,21 @@ async function getPayment({ reference_id, id }) {
   return q.rows[0] || null;
 }
 
+/* Newest payments, optionally narrowed. Parameterised, never interpolated -
+   these filters come straight off a query string. */
+async function recentPayments({ limit = 20, subject_type = null, platform = null } = {}) {
+  const where = [];
+  const args = [];
+  if (subject_type) { args.push(subject_type); where.push(`subject_type = $${args.length}`); }
+  if (platform)     { args.push(platform);     where.push(`platform = $${args.length}`); }
+  args.push(Math.min(Number(limit) || 20, 100));
+  const q = await pool.query(
+    `SELECT * FROM payments
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY created_at DESC LIMIT $${args.length}`, args);
+  return q.rows;
+}
+
 async function paymentsForSubject(subject_type, subject_id) {
   const q = await pool.query(
     `SELECT * FROM payments WHERE subject_type=$1 AND subject_id=$2
@@ -445,7 +460,7 @@ function stopPoller() {
 }
 
 module.exports = {
-  startPayment, checkPayment, getPayment, paymentsForSubject,
+  startPayment, checkPayment, getPayment, paymentsForSubject, recentPayments,
   availableMethods, allMethods, providerForMethod, newReference,
   providerConfig, setProviderConfig, invalidateProviderConfig,
   startPoller, stopPoller,

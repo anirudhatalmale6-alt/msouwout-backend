@@ -60,6 +60,8 @@ const ADMIN_ONLY = [
   // all, and which of Jeffery's gateways the money goes through.
   ['GET', /^\/api\/payments\/admin\/providers\/?$/],
   ['PUT', /^\/api\/payments\/admin\/providers\/?$/],
+  // Recent payments: references, amounts and payer phone numbers.
+  ['GET', /^\/api\/payments\/admin\/recent\/?$/],
 
   // Medical claims and settlements move money.
   ['PATCH', /^\/api\/medical\/(claims|settlement)\/[^/]+$/],

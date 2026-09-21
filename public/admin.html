@@ -2,6 +2,43 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script>
+/* ── Every MsouWout time a human reads is Haiti time ──────────────────────
+   Storage stays UTC and must: the database, toISOString() and everything the
+   server records are untouched. This only changes DISPLAY.
+
+   Why it is patched here rather than at each call site: there are dozens of
+   them across the apps, and the failure mode of missing one is invisible - the
+   time still renders, just in whatever zone the handset happens to be set to.
+   Jeffery's own phone is on the wrong zone, which is how we found this.
+
+   Inline on purpose. A separate .js that fails to load on a weak Port-au-Prince
+   connection would silently fall back to device time and look fine. Leaflet
+   already taught us that lesson on this project.
+
+   Number.prototype.toLocaleString is a DIFFERENT function and is untouched -
+   it formats every HTG total on these pages. */
+(function(){
+  var TZ = 'America/Port-au-Prince';
+  ['toLocaleString','toLocaleDateString','toLocaleTimeString'].forEach(function(fn){
+    var orig = Date.prototype[fn];
+    if (!orig || orig.__htPatched) return;
+    function patched(locales, options){
+      var o = {};
+      if (options) for (var k in options) {
+        if (Object.prototype.hasOwnProperty.call(options,k)) o[k] = options[k];
+      }
+      if (!o.timeZone) o.timeZone = TZ;   /* an explicit zone always wins */
+      try { return orig.call(this, locales, o); }
+      catch (e) { return orig.call(this, locales, options); }  /* never break a page over a time */
+    }
+    patched.__htPatched = true;
+    Date.prototype[fn] = patched;
+  });
+  window.HAITI_TZ = TZ;
+})();
+</script>
+
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>MsouWout Admin - Zone Management</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
