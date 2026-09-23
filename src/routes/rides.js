@@ -848,6 +848,16 @@ router.get('/:id/track', async (req, res) => {
         location_updated: ride.last_location_update
       } : null,
       price: ride.price,
+      /* 🚨 23 Sep: the tracking page could not take money because it was never
+         told what the ride costs or whether it had been settled. `price` alone
+         UNDER-CHARGES every ride that has DASH protection on it - the amount
+         the server actually bills is total_with_protection. None of these three
+         are personal data, so a shared tracking link may see them; what a
+         shared viewer must NOT get is the pay button, and that is decided in
+         the page, not here. */
+      total_with_protection: ride.total_with_protection,
+      payment_status: ride.payment_status,
+      payment_method: ride.payment_method,
       distance_km: ride.distance_km,
       duration_min: ride.duration_min,
       ride_type: ride.ride_type,
