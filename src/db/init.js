@@ -327,6 +327,47 @@ async function runMigrations(client) {
       await client.query(`
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP WITH TIME ZONE;
       `);
+      /* 🛑 23 Sep 2026. MW-4RQDSL0: Jennifer paid 368 HTG, the ride was
+         cancelled eight minutes later, a 50 HTG cancellation fee was kept, and
+         318 HTG was owed back to her - with nothing anywhere in this codebase
+         that could send it. There is no refund route, no refund function, no
+         provider call. The word "refund" appears once, in a comment.
+
+         Until today a passenger could not pay before the ride ended, so
+         "paid then cancelled" could not happen. Payment at accept time is what
+         opened it.
+
+         Building the refund itself needs the gateway to support one, which is
+         an open question with SolutionIP. What must NOT wait for that is the
+         RECORD: an amount owed to a passenger that exists only in someone's
+         memory is an amount that gets lost. The cancel route now writes what
+         is owed, and it stays on the row until someone marks it settled. */
+      await client.query(`
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refund_due INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refund_status VARCHAR(20);
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refund_note TEXT;
+      `);
+      /* One-time repair for rides cancelled BEFORE the column existed - today
+         that is exactly one, MW-4RQDSL0. Only touches rows that are cancelled,
+         actually paid, and carry no refund record yet, so re-running it can
+         never disturb a refund somebody has already settled. */
+      const backfill = await client.query(`
+        UPDATE ride_requests
+           SET refund_due = GREATEST(0, ROUND(
+                 (CASE WHEN total_with_protection > 0 THEN total_with_protection
+                       ELSE price END) - COALESCE(cancel_fee, 0)))::INTEGER,
+               refund_status = 'owed'
+         WHERE status = 'cancelled'
+           AND LOWER(COALESCE(payment_status, '')) = 'paid'
+           AND COALESCE(refund_due, 0) = 0
+           AND refund_status IS NULL
+        RETURNING tracking_code, refund_due`);
+      if (backfill.rows.length) {
+        console.warn('[REFUND OWED] recorded on ' + backfill.rows.length +
+          ' already-cancelled paid ride(s): ' +
+          backfill.rows.map(x => `${x.tracking_code}=${x.refund_due} HTG`).join(', '));
+      }
       // Money split, payout & cancellation tracking (confirmed 2026-07-18)
       await client.query(`
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS driver_dash_share NUMERIC(10,2) NOT NULL DEFAULT 0;

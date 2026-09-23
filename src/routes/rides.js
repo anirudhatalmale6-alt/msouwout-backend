@@ -751,22 +751,54 @@ router.patch('/:id/cancel', async (req, res) => {
       }
     }
 
+    /* 🛑 A ride that was ALREADY PAID for.
+       Until 23 Sep a passenger could only pay once the ride had finished, so
+       this could not arise. Payment now opens the moment a driver accepts, and
+       the first real ride to use it was cancelled eight minutes after paying:
+       368 HTG taken, 50 HTG legitimately kept, 318 HTG owed back - and not one
+       line in this codebase could send it.
+       The refund itself needs the gateway to support one. Recording the debt
+       does not, and must not wait for it: money owed that lives only in
+       somebody's memory is money that gets lost. */
+    const alreadyPaid = String(r.payment_status || '').toLowerCase() === 'paid';
+    const paidAmount = Number(r.total_with_protection) > 0
+      ? Number(r.total_with_protection)
+      : Number(r.price || 0);
+    const refundDue = alreadyPaid ? Math.max(0, Math.round(paidAmount - cancelFee)) : 0;
+
     await pool.query(
       `UPDATE ride_requests
          SET status = 'cancelled', cancel_reason = $1, cancelled_by = $2,
-             cancel_fee = $3, updated_at = NOW()
+             cancel_fee = $3,
+             refund_due = $5,
+             refund_status = CASE WHEN $5 > 0 THEN 'owed' ELSE refund_status END,
+             updated_at = NOW()
        WHERE id = $4`,
-      [reason || null, cancelledBy, cancelFee, req.params.id]
+      [reason || null, cancelledBy, cancelFee, req.params.id, refundDue]
     );
+
+    if (refundDue > 0) {
+      /* Loud on purpose. Nobody is watching a database column during a launch. */
+      console.warn(`[REFUND OWED] ride ${r.tracking_code} — paid ${paidAmount} HTG, ` +
+                   `fee ${cancelFee} HTG, OWED ${refundDue} HTG to ` +
+                   `${r.customer_phone || 'unknown number'}`);
+    }
 
     res.json({
       status: 'cancelled',
       cancelled_by: cancelledBy,
       cancel_fee: cancelFee,               // 0 = free; else charged to rider, paid to driver
       dash_charged: false,                 // DASH is never charged on a cancellation
+      was_paid: alreadyPaid,
+      amount_paid: alreadyPaid ? Math.round(paidAmount) : 0,
+      refund_due: refundDue,               // still owed - NOTHING sends it automatically
       message: cancelFee > 0
         ? `Kous anile. Frè anilasyon: ${cancelFee} HTG (pou chofè a).`
-        : 'Kous anile. Pa gen frè.'
+        : 'Kous anile. Pa gen frè.',
+      refund_message: refundDue > 0
+        ? `Ou te peye ${Math.round(paidAmount)} HTG. Nou dwe remèt ou ${refundDue} HTG. ` +
+          `Ekip MsouWout ap voye l sou kont MonCash ou.`
+        : undefined
     });
   } catch (err) {
     console.error('Cancel ride error:', err);
@@ -858,6 +890,11 @@ router.get('/:id/track', async (req, res) => {
       total_with_protection: ride.total_with_protection,
       payment_status: ride.payment_status,
       payment_method: ride.payment_method,
+      /* So a passenger who paid and then cancelled is TOLD what she is owed,
+         rather than being left to work it out or to assume she lost it. */
+      cancel_fee: ride.cancel_fee,
+      refund_due: ride.refund_due,
+      refund_status: ride.refund_status,
       distance_km: ride.distance_km,
       duration_min: ride.duration_min,
       ride_type: ride.ride_type,

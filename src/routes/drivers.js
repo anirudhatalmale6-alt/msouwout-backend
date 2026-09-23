@@ -455,10 +455,16 @@ router.post('/login', async (req, res) => {
     // to carry what a driver actually needs: where he is going and who he is
     // calling. Without the addresses the card came up with the fare and nothing else.
     const rides = await pool.query(`
+      /* 🚨 cancel_fee was missing from this list, so the dashboard could not
+         show a cancellation fee even after it was told to: it read undefined
+         and rendered nothing. "We charged the passenger 50 gdes, i didnt see
+         it in my dashboard" - 23 Sep. A column the page needs has to be
+         SELECTED; adding the display code alone fixes nothing. */
       SELECT id, ride_type, status, price, driver_earning, pickup_lat, pickup_lng,
              dropoff_lat, dropoff_lng, pickup_address, dropoff_address,
              customer_name, customer_phone, accepted_at, started_at,
-             created_at, completed_at, tracking_code
+             created_at, completed_at, tracking_code,
+             cancel_fee, payment_status
       FROM ride_requests WHERE driver_id = $1
       ORDER BY created_at DESC LIMIT 20
     `, [driver.id]);
