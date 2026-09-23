@@ -37,6 +37,15 @@ const ADMIN_ONLY = [
   ['PATCH', /^\/api\/drivers\/[^/]+\/(approve|reject|suspend)$/],
   ['PATCH', /^\/api\/drivers\/admin\/[^/]+$/],
   ['POST', /^\/api\/drivers\/admin\/[^/]+\/(approve|reject)$/],
+  /* 🚨 22 Sep: GET /api/rides was PUBLIC and its own comment says "(admin)".
+     It returns r.* for every ride - customer_name AND customer_phone - and
+     with no ?limit it returns the WHOLE table to anyone who knows the URL.
+     ⚠️ The pattern is anchored so it can only ever match the bare list. The
+     driver board (/api/rides/available), a single ride (/api/rides/MW-xxxx)
+     and the driver's active ride must all stay open - the apps carry no
+     credential and would break instantly. */
+  ['GET', /^\/api\/rides\/?$/],
+
   // The full driver list: name, phone, e-mail, licence number, plate.
   ['GET', /^\/api\/drivers\/?$/],
   ['GET', /^\/api\/drivers\/stats\/?$/],

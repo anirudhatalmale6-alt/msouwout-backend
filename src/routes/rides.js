@@ -466,7 +466,13 @@ router.get('/driver/:driverId/active', async (req, res) => {
     const result = await pool.query(
       `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone, d.license_plate
        FROM ride_requests r LEFT JOIN drivers d ON r.driver_id = d.id
-       WHERE r.driver_id = $1 AND r.status IN ('accepted','in_progress')
+       /* 🚨 22 Sep: MW-KRPWCO9 was accepted, arrived and STARTED, then a safety
+          alert flipped its status to 'monitoring' (routes/safety.js). This
+          query did not list that status, so the endpoint returned {ride:null}
+          and the ride became invisible to its own driver - it could not be
+          completed and could not be paid. A safety alert must never take the
+          ride off the driver's screen; that is when he needs it most. */
+       WHERE r.driver_id = $1 AND r.status IN ('accepted','in_progress','monitoring','emergency')
        ORDER BY r.updated_at DESC LIMIT 1`,
       [req.params.driverId]
     );
