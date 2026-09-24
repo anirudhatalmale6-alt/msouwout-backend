@@ -26,7 +26,15 @@ const DEFAULT_CONFIG = {
   dash_msouwout_share: 0.20,    // MsouWout cut of the 25 HTG DASH pot (→ 5); rest (20) to DASH fund
   road_factor: 1.30,            // straight-line → road distance factor
   // Cancellation
-  cancel_fee: 50,               // charged to rider after the grace window, paid to the driver
+  /* 🚨 24 Sep 2026 — ZERO FOR THE LAUNCH, on Jeffery's instruction:
+     "make passenger cancellation free before a ride starts ... set the
+     cancellation fee to zero for the launch period. Keep the fee configurable
+     so we can change it later without rebuilding the system."
+     It stays a normal config value, editable from the admin screen, and the
+     cancellation is still RECORDED with cancelled_by and a reason so repeated
+     no-shows remain visible - he asked for that explicitly. Putting a number
+     back here (or in the admin) re-arms it with no code change. */
+  cancel_fee: 0,                // charged to rider after the grace window, paid to the driver
   cancel_grace_sec: 120,        // free-cancel window after a driver accepts
   // Surge — expressed as a fraction added (0.15 = +15%). Single highest applies.
   dynamic_pricing: 1,
