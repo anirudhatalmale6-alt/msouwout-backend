@@ -348,6 +348,32 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refund_note TEXT;
       `);
+      /* 🚨 Changing DEFAULT_CONFIG.cancel_fee to 0 was NOT enough, and the only
+         reason I know that is that I read /api/pricing on the live server after
+         the deploy instead of trusting it. getPricingConfig() returns
+         { ...DEFAULT_CONFIG, ...stored } — a stored row was already holding
+         cancel_fee 50, so the deploy landed and the behaviour did not move.
+
+         This rewrites the stored value once, and leaves every other pricing
+         field alone. The marker means a fee deliberately set from the admin
+         screen later is never clobbered on the next restart - a migration that
+         re-applies itself forever is a setting nobody can change. */
+      const zeroed = await client.query(
+        `SELECT 1 FROM service_config WHERE key = 'launch_cancel_fee_zeroed'`);
+      if (!zeroed.rows.length) {
+        const r = await client.query(
+          `UPDATE service_config
+              SET value = jsonb_set(value, '{cancel_fee}', '0'::jsonb), updated_at = NOW()
+            WHERE key = 'pricing'
+              AND (value ->> 'cancel_fee') IS DISTINCT FROM '0'
+          RETURNING value ->> 'cancel_fee' AS now_is`);
+        await client.query(
+          `INSERT INTO service_config (key, value, updated_at)
+           VALUES ('launch_cancel_fee_zeroed', '{"done":true}'::jsonb, NOW())
+           ON CONFLICT (key) DO NOTHING`);
+        console.warn('[LAUNCH] cancellation fee set to 0 on ' + r.rows.length +
+                     ' stored pricing row(s); it stays editable from the admin screen.');
+      }
       /* One-time repair for rides cancelled BEFORE the column existed - today
          that is exactly one, MW-4RQDSL0. Only touches rows that are cancelled,
          actually paid, and carry no refund record yet, so re-running it can
