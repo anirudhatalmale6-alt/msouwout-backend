@@ -56,7 +56,7 @@ const PROVIDERS = {
        SolutionIP, and inventing one would be inventing a capability. */
     methods: ['moncash', 'natcash', 'kashpaw', 'all'],
 
-    async create({ reference_id, amount, method }) {
+    async create({ reference_id, amount, method, return_url }) {
       const r = await fetch(`${SOLUTIONIP_URL}/api/paiement-marchand`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -64,7 +64,18 @@ const PROVIDERS = {
           client_id: CLIENT_ID,
           refference_id: reference_id,   // their spelling, not a typo of ours
           montant: amount,
-          payment_method: method
+          payment_method: method,
+          /* 🚨 23 Sep: after paying, the passenger was dumped on the gateway's
+             own thank-you page - paymplopplop.com, with an advert and a survey
+             on it. "We cant have that because its confusing."
+             SolutionIP's reply mentioned setting ONE return URL on the account.
+             That would have been wrong for us: the SAME client_id serves
+             MsouWout, MyPlopPlop, Tike Lakay and 48HoursReady, so one account
+             URL sends a ticket buyer to a ride tracking page.
+             They take it PER REQUEST as well - haitibiznis-backend has been
+             sending return_url on this very endpoint all along. This adapter
+             simply never passed it. Omitted, not unsupported. */
+          return_url
         })
       });
       const data = await r.json();
@@ -210,7 +221,7 @@ function newReference(prefix) {
  * that succeeds while the app is closed is still something we know to ask about.
  */
 async function startPayment({ subject_type, subject_id, amount, method, payer_phone,
-                              currency, platform, user_id, metadata }) {
+                              currency, platform, user_id, metadata, return_url }) {
   const cur = (currency || 'HTG').toUpperCase();
   const amt = Math.ceil(Number(amount));
 
@@ -287,7 +298,7 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
 
   let created;
   try {
-    created = await provider.create({ reference_id, amount: amt, method });
+    created = await provider.create({ reference_id, amount: amt, method, return_url });
   } catch (err) {
     await pool.query(
       `UPDATE payments SET status='failed', last_response=$2, updated_at=NOW() WHERE id=$1`,

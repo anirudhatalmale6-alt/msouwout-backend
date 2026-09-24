@@ -112,9 +112,15 @@ router.post('/create', async (req, res) => {
        This is the MyPlopPlop card bug in miniature: there, the basket total is
        worked out in the browser and then never reaches the provider at all. */
     let amountToCharge = amount;
+    /* There is no sandbox at this gateway, so the only way to prove a return
+       address works is a real payment. The 20 HTG test page is the cheapest
+       possible proof, so send that one back to itself. */
+    let returnUrl = subject === 'test'
+      ? 'https://msouwout.com/pay-test.html'
+      : 'https://msouwout.com/';
     if (subject === 'ride' && subjectId) {
       const r = await pool.query(
-        `SELECT price, medical_fee, total_with_protection, payment_status
+        `SELECT price, medical_fee, total_with_protection, payment_status, tracking_code
            FROM ride_requests WHERE id = $1`, [subjectId]);
       if (!r.rows.length) return res.status(404).json({ error: 'Ride not found' });
       const ride = r.rows[0];
@@ -124,12 +130,23 @@ router.post('/create', async (req, res) => {
       amountToCharge = ride.total_with_protection > 0
         ? ride.total_with_protection
         : ride.price;
+      /* Where the gateway sends her when she has finished paying. Built HERE,
+         from the ride we just looked up - never taken from the request body.
+         A return address supplied by the browser is an open redirect: anybody
+         could hand out a MsouWout payment link that lands the payer on a page
+         of their choosing, which is how a convincing phishing page gets built
+         out of a real payment flow. */
+      if (ride.tracking_code) {
+        returnUrl = 'https://msouwout.com/track.html?code=' +
+                    encodeURIComponent(ride.tracking_code);
+      }
     }
 
     const out = await pay.startPayment({
       subject_type: subject, subject_id: subjectId,
       amount: amountToCharge, method: chosen, payer_phone, currency,
-      platform: platform || 'msouwout', user_id, metadata
+      platform: platform || 'msouwout', user_id, metadata,
+      return_url: returnUrl
     });
 
     if (!out.ok) {
