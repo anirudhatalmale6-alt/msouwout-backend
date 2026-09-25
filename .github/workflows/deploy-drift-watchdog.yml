@@ -1,0 +1,113 @@
+name: Deploy drift watchdog
+
+# 🚨 25 Sep 2026. haitibiznis-api was found running a commit from a week
+# earlier. The push reached GitHub and never reached Render, so a fix for a
+# live bug sat in the repository deployed to nothing.
+#
+# The inventory says why, and it is not what either of us assumed:
+#
+#   autoDeploy=yes on EVERY service, and yet not one deploy in the account's
+#   history was triggered by a push. Every single one reads trigger=api,
+#   manual or service_updated.
+#
+# So Render's GitHub connection is not delivering push events at all. The
+# repositories that look like they auto-deploy only do so because a workflow
+# here calls Render's API - deploy.yml does exactly that for msouwout-backend.
+# haitibiznis-backend has no workflow, so nothing ever called the API for it.
+#
+# The proper fix is a workflow in that repository too, but it has no secrets at
+# all and RENDER_API_KEY cannot be read back out of this one. So instead this
+# runs here, where the key already lives, and reconciles what Render is running
+# against what GitHub holds. It catches the whole class of problem, including
+# services that drift in future, and needs no new credential.
+#
+# ⛔ SCOPE IS DELIBERATELY NARROW. This GitHub account is shared across several
+# clients, and Render carries their services too - starflex, toupatou, prolakay.
+# Deploying somebody else's service because it looks out of date would be
+# helping myself to their launch window. Only the two services in this project
+# are listed, by ID, and IDs cannot be renamed out from under us.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'     # four times a day, offset off the hour
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report drift without deploying
+        required: false
+        default: 'false'
+
+concurrency:
+  group: render-drift
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      DRY_RUN: ${{ github.event.inputs.dry_run }}
+    steps:
+      - name: Guard against a missing key
+        run: '[ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY is not set"; exit 1; }'
+
+      - name: Compare what Render runs against what GitHub holds
+        run: |
+          set -uo pipefail
+          API=https://api.render.com/v1
+          drift=0
+
+          # service id | repo | branch  — this project only, see the note above
+          while IFS='|' read -r sid repo branch; do
+            [ -n "$sid" ] || continue
+
+            head="$(curl -sS "https://api.github.com/repos/$repo/commits/$branch" \
+                      -H 'Accept: application/vnd.github+json' \
+                      -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                    | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"][:7])' 2>/dev/null || echo '')"
+
+            live="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+                      "$API/services/$sid/deploys?limit=20" \
+                    | python3 -c '
+import json, sys
+for row in json.load(sys.stdin):
+    d = row.get("deploy", row)
+    if d.get("status") == "live":
+        print((d.get("commit") or {}).get("id", "")[:7]); break
+else:
+    print("")' 2>/dev/null || echo '')"
+
+            if [ -z "$head" ] || [ -z "$live" ]; then
+              echo "::warning::$repo — could not read head='$head' live='$live', skipping"
+              continue
+            fi
+
+            if [ "$head" = "$live" ]; then
+              echo "ok      $repo  $live"
+              continue
+            fi
+
+            drift=1
+            echo "::warning::DRIFT $repo — Render is running $live, GitHub has $head"
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+              echo "        dry run, not deploying"
+              continue
+            fi
+
+            echo "        deploying $head"
+            curl -sS -X POST -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H 'Content-Type: application/json' \
+              "$API/services/$sid/deploys" -d '{"clearCache":"do_not_clear"}' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print("        deploy", d.get("id"), d.get("status"))' \
+              || echo "::error::could not start a deploy for $repo"
+          done <<'SERVICES'
+          srv-d7an362dbo4c73a5njt0|anirudhatalmale6-alt/msouwout-backend|main
+          srv-d7o1inl7vvec739fslu0|anirudhatalmale6-alt/haitibiznis-backend|main
+          SERVICES
+
+          if [ "$drift" = "1" ]; then
+            echo "Drift was found. It has been deployed unless this was a dry run."
+          else
+            echo "Every service in this project is running its repository head."
+          fi
