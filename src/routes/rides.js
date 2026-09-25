@@ -1014,6 +1014,10 @@ router.get('/:id/track', async (req, res) => {
       cancel_fee: ride.cancel_fee,
       refund_due: ride.refund_due,
       refund_status: ride.refund_status,
+      /* So the page can say "your driver could not make it, we are finding
+         another one" instead of silently dropping back to a searching screen
+         that looks like the ride was never accepted. */
+      reassigned_count: ride.reassigned_count || 0,
       distance_km: ride.distance_km,
       duration_min: ride.duration_min,
       ride_type: ride.ride_type,
