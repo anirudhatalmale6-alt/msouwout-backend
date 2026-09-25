@@ -347,6 +347,11 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refund_status VARCHAR(20);
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS refund_note TEXT;
+        /* How many times a driver walked away from this PAID ride and it went
+           back on the board. Kept so "no replacement was found" is a number
+           somebody can see rather than a feeling, and so a ride that has been
+           round three times can be spotted and refunded by hand. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS reassigned_count INTEGER NOT NULL DEFAULT 0;
       `);
       /* 🚨 Changing DEFAULT_CONFIG.cancel_fee to 0 was NOT enough, and the only
          reason I know that is that I read /api/pricing on the live server after

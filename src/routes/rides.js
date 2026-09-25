@@ -775,6 +775,39 @@ router.patch('/:id/cancel', async (req, res) => {
       return res.status(400).json({ error: 'Pa ka anile kous sa' });
     }
 
+    /* 🚨 24 Sep — REASSIGNMENT. Jeffery: "If a driver cancels a prepaid ride,
+       keep the payment attached to the booking and search for another verified
+       driver. The passenger must not pay twice."
+       So a DRIVER walking away from a ride the passenger has already paid for
+       does not cancel the booking - it goes back on the board. The payment row
+       is untouched, payment_status stays 'paid', and nothing is owed back
+       because nothing is being given back. The passenger keeps her tracking
+       code, her PIN and her place.
+       Her own cancel is unaffected: she can still cancel and then the refund is
+       recorded as before. */
+    if (cancelledBy === 'driver' &&
+        String(r.payment_status || '').toLowerCase() === 'paid' &&
+        ['accepted', 'in_progress'].includes(r.status)) {
+      await pool.query(
+        `UPDATE ride_requests
+            SET status = 'searching', driver_id = NULL, accepted_at = NULL,
+                arrived_at = NULL, started_at = NULL,
+                reassigned_count = COALESCE(reassigned_count, 0) + 1,
+                cancel_reason = $2, updated_at = NOW()
+          WHERE id = $1`,
+        [req.params.id,
+         `driver released a paid ride: ${reason || 'no reason given'}`]);
+      console.warn(`[REASSIGN] ride ${r.tracking_code} — driver left a PAID ride; ` +
+                   `back to searching, payment kept`);
+      return res.json({
+        status: 'searching',
+        reassigned: true,
+        cancel_fee: 0,
+        payment_kept: true,
+        message: 'Chofè a pa ka fè kous la. N ap chèche yon lòt chofè pou ou — ou pa bezwen peye ankò.'
+      });
+    }
+
     const config = await pricing.getPricingConfig();
     let cancelFee = 0;
 
