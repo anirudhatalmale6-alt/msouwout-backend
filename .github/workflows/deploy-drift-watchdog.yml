@@ -67,16 +67,12 @@ jobs:
                       -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                     | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"][:7])' 2>/dev/null || echo '')"
 
+            # ⚠️ One line on purpose. A multi-line python here started at column
+            # zero, which ENDS the YAML literal block - the workflow parsed as
+            # broken and GitHub would have refused to run it.
             live="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
                       "$API/services/$sid/deploys?limit=20" \
-                    | python3 -c '
-import json, sys
-for row in json.load(sys.stdin):
-    d = row.get("deploy", row)
-    if d.get("status") == "live":
-        print((d.get("commit") or {}).get("id", "")[:7]); break
-else:
-    print("")' 2>/dev/null || echo '')"
+                    | python3 -c 'import json,sys; ds=[r.get("deploy",r) for r in json.load(sys.stdin)]; print(next(((d.get("commit") or {}).get("id","")[:7] for d in ds if d.get("status")=="live"), ""))' 2>/dev/null || echo '')"
 
             if [ -z "$head" ] || [ -z "$live" ]; then
               echo "::warning::$repo — could not read head='$head' live='$live', skipping"
