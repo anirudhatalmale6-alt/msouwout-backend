@@ -51,10 +51,18 @@ const PROVIDERS = {
   solutionip: {
     name: 'solutionip',
     /* Named as the gateway names them. 'all' lets the payer choose on the
-       gateway's own page. No card entry here: the live route accepts only
-       moncash, natcash, kashpaw and all — cards are an open question with
-       SolutionIP, and inventing one would be inventing a capability. */
-    methods: ['moncash', 'natcash', 'kashpaw', 'all'],
+       gateway's own page.
+
+       🚨 25 Sep: KashPaw removed on Jeffery's instruction. It is also the right
+       call for a second reason he may not know - the gateway's WITHDRAWAL
+       endpoint only pays out to moncash or natcash, so a driver paid through
+       KashPaw could be collected from and never paid.
+
+       ⚠️ 'carte' (Square) exists at the gateway and is NOT enabled here. It
+       converts the amount to USD at their rate and takes the payment on a
+       Square page, which is a different product from a Haitian wallet. It gets
+       switched on when Jeffery says so, not because it is available. */
+    methods: ['moncash', 'natcash', 'all'],
 
     async create({ reference_id, amount, method, return_url }) {
       const r = await fetch(`${SOLUTIONIP_URL}/api/paiement-marchand`, {
