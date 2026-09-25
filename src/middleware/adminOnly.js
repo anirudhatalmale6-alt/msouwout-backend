@@ -45,6 +45,10 @@ const ADMIN_ONLY = [
      and the driver's active ride must all stay open - the apps carry no
      credential and would break instantly. */
   ['GET', /^\/api\/rides\/?$/],
+  /* Writing off money owed to a passenger. It moves nothing, but it is the
+     record that says she was paid back - so it must not be something a
+     passenger can set on her own ride. */
+  ['PATCH', /^\/api\/rides\/[^/]+\/refund$/],
 
   // The full driver list: name, phone, e-mail, licence number, plate.
   ['GET', /^\/api\/drivers\/?$/],

@@ -483,22 +483,44 @@ router.get('/driver/:driverId/active', async (req, res) => {
   }
 });
 
+/* 🚨🚨 24 Sep — "Confirm that public tracking links cannot expose passenger
+   information or security PINs."
+   They could. This route returns r.* — 48 columns, including customer_phone,
+   driver_phone and ride_pin — and it ACCEPTED A TRACKING CODE. A tracking code
+   is printed in a link the passenger is expected to forward to her family, so
+   anybody holding that link could read her number and the PIN she uses to
+   prove she is getting into the right car.
+   It now answers ONLY to the ride's UUID, which is never shared: the passenger
+   app has it from the moment she orders, and nobody else ever sees it. Anyone
+   with a tracking code goes to /:id/track, whose payload is curated.
+   Checked before changing it: msouwout-site/index.html is the only caller and
+   it passes rideData.id, a UUID. */
 router.get('/:id', async (req, res) => {
   try {
     const param = req.params.id;
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(param);
+    if (!isUUID) {
+      return res.status(404).json({
+        error: 'Kous pa jwenn',
+        hint: 'A tracking code cannot read the full ride. Use /api/rides/:code/track.'
+      });
+    }
     const result = await pool.query(
       `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone,
               d.vehicle_type, d.license_plate, d.photo_url as driver_photo
        FROM ride_requests r
        LEFT JOIN drivers d ON r.driver_id = d.id
-       WHERE ${isUUID ? 'r.id = $1' : 'r.tracking_code = $1'}`,
+       WHERE r.id = $1`,
       [param]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Kous pa jwenn' });
     }
-    res.json(result.rows[0]);
+    /* She already has her PIN from the moment she ordered - the ordering page
+       stores it. Not repeating it here keeps it out of one more response. */
+    const row = { ...result.rows[0] };
+    delete row.ride_pin;
+    res.json(row);
   } catch (err) {
     console.error('Get ride error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
@@ -669,6 +691,21 @@ router.patch('/:id/start', async (req, res) => {
     if (ride.rows.length === 0) return res.status(404).json({ error: 'Kous pa jwenn' });
     if (ride.rows[0].status !== 'accepted') return res.status(400).json({ error: 'Kous dwe aksepte avan kòmanse' });
 
+    /* 🚨 24 Sep, Jeffery's final structure, point 1: "The driver must receive
+       server-confirmed payment before starting."
+       Nothing enforced that. The driver could take a passenger who had not
+       paid, and only discover it afterwards - by which time the ride is done
+       and the only way to collect is to chase her.
+       SERVER-confirmed means this column, which is written when the gateway
+       itself says the money arrived. Not what the phone believes. */
+    if (String(ride.rows[0].payment_status || '').toLowerCase() !== 'paid') {
+      return res.status(402).json({
+        error: 'Pasaje a poko peye. Tann konfimasyon peman an avan ou kòmanse kous la.',
+        payment_required: true,
+        payment_status: ride.rows[0].payment_status || 'unpaid'
+      });
+    }
+
     if (ride.rows[0].ride_pin && pin !== ride.rows[0].ride_pin) {
       return res.status(403).json({ error: 'PIN pa kòrèk. Mande pasaje a pou PIN nan.', pin_required: true });
     }
@@ -806,6 +843,47 @@ router.patch('/:id/cancel', async (req, res) => {
   }
 });
 
+/* PATCH /api/rides/:id/refund — mark an owed refund as settled BY HAND.
+   Jeffery, 24 Sep: "Our administration will process refunds manually and
+   record the transfer reference. Do not build automatic refunds."
+   So this moves no money and calls no gateway. It is the book-keeping entry
+   that turns "owed" into "paid on this date with this reference", which is the
+   difference between a refund somebody remembers and one that can be proved.
+   Admin-only: it writes off money owed to a passenger. */
+router.patch('/:id/refund', async (req, res) => {
+  try {
+    const { reference, note, amount } = req.body || {};
+    if (!reference || !String(reference).trim()) {
+      return res.status(400).json({ error: 'A transfer reference is required' });
+    }
+    const r = await pool.query(
+      `SELECT id, tracking_code, refund_due, refund_status FROM ride_requests WHERE id = $1`,
+      [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Kous pa jwenn' });
+    const ride = r.rows[0];
+    if (!Number(ride.refund_due)) {
+      return res.status(400).json({ error: 'This ride has no refund owed' });
+    }
+    if (ride.refund_status === 'refunded') {
+      /* Not an error - someone pressed twice. Say so instead of double-marking. */
+      return res.status(409).json({ error: 'This refund is already recorded as paid' });
+    }
+    const paid = amount != null ? Math.round(Number(amount)) : Number(ride.refund_due);
+    await pool.query(
+      `UPDATE ride_requests
+          SET refund_status = 'refunded', refunded_at = NOW(),
+              refund_note = $2, updated_at = NOW()
+        WHERE id = $1`,
+      [req.params.id,
+       `ref=${String(reference).trim()} amount=${paid}` + (note ? ` note=${String(note).trim()}` : '')]);
+    console.warn(`[REFUND SETTLED] ride ${ride.tracking_code} — ${paid} HTG, reference ${reference}`);
+    res.json({ status: 'refunded', ride: ride.tracking_code, amount: paid, reference });
+  } catch (err) {
+    console.error('Refund record error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 // POST /api/rides/:id/emergency — Trigger SOS panic
 router.post('/:id/emergency', async (req, res) => {
   try {
@@ -858,12 +936,20 @@ router.get('/:id/track', async (req, res) => {
     }
 
     const ride = result.rows[0];
-    const showPin = req.query.pin === '1';
+    /* 🚨🚨 The PIN is GONE from this endpoint. `?pin=1` was decided by a query
+       string that anybody could type, on a route reached with a tracking code
+       that is designed to be forwarded - so "only the owner sees it" was never
+       true. The PIN is issued and displayed in the ordering app, which is the
+       one place that can tell the passenger apart from someone she sent the
+       link to.
+       ⚠️ rider.name and rider.phone DO remain: the panic button posts them as
+       "who is in trouble", and an alert that cannot say who raised it is worse
+       than the privacy it protects. Flagged to Jeffery rather than quietly
+       weakening the safety feature. The proper fix is a private owner link. */
     const trackResponse = {
       ride_id: ride.id,
       tracking_code: ride.tracking_code,
       status: ride.status,
-      ride_pin: showPin ? ride.ride_pin : undefined,
       pickup: { lat: ride.pickup_lat, lng: ride.pickup_lng, address: ride.pickup_address },
       dropoff: { lat: ride.dropoff_lat, lng: ride.dropoff_lng, address: ride.dropoff_address },
       pickup_address: ride.pickup_address,
