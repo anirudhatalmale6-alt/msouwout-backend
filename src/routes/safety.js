@@ -67,7 +67,38 @@ router.delete('/contacts/:id', async (req, res) => {
 router.post('/sos', async (req, res) => {
   try {
     const { phone, name, lat, lng, ride_id, level, silent, trigger_reason } = req.body;
-    if (!phone) return res.status(400).json({ error: 'phone obligatwa' });
+
+    /* 🚨 27 Sep: WHO IS IN TROUBLE IS LOOKED UP, NOT POSTED.
+       This used to demand the phone number from the page, which is the only
+       reason the tracking response had to carry the passenger's name and
+       number to everybody holding a forwarded link. With the ride id the
+       server can read both itself, so the page needs neither.
+
+       It also makes the alarm better, not just more private: a family member
+       watching the shared link can now raise it without knowing her number,
+       and the alert still says exactly who is in the car. An alert that
+       cannot name the person is worse than the privacy it buys - so the
+       lookup happens FIRST and the request is only refused if it fails. */
+    let alertPhone = phone, alertName = name;
+    if (ride_id && (!alertPhone || !alertName)) {
+      try {
+        const r = await pool.query(
+          `SELECT customer_name, customer_phone, passenger_name, passenger_phone, is_delegated
+             FROM ride_requests WHERE id = $1`, [ride_id]);
+        if (r.rows.length) {
+          const ride = r.rows[0];
+          /* On a delegated ride the person IN the car is the passenger, not
+             whoever ordered it. Alerting the orderer's number would send help
+             to the wrong person. */
+          alertPhone = alertPhone || (ride.is_delegated ? ride.passenger_phone : null) || ride.customer_phone;
+          alertName  = alertName  || (ride.is_delegated ? ride.passenger_name : null) || ride.customer_name;
+        }
+      } catch (e) {
+        console.error('SOS: could not read the ride for identity:', e.message);
+      }
+    }
+
+    if (!alertPhone) return res.status(400).json({ error: 'phone obligatwa' });
 
     const alertLevel = level || 'warning';
 
@@ -76,7 +107,7 @@ router.post('/sos', async (req, res) => {
        is_silent, trigger_reason, created_at)
        VALUES ($1, $2, $3, $4, $5, 'msouwout', 'active', $6, $7, $8, NOW())
        RETURNING *`,
-      [phone, name || '', lat || null, lng || null, ride_id || null,
+      [alertPhone, alertName || '', lat || null, lng || null, ride_id || null,
        alertLevel, silent || false, trigger_reason || 'manual']
     );
 

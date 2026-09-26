@@ -180,6 +180,11 @@ router.post('/request', async (req, res) => {
     const rideId = uuidv4();
     let trackingCode = newTrackingCode();
     const ridePin = String(Math.floor(1000 + Math.random() * 9000));
+    /* The passenger's private key to her own booking. 32 hex characters from
+       the OS random source - it is the only thing standing between a
+       forwarded family link and her name, her number and her PIN, so it must
+       not come from Math.random(). Returned exactly once, at creation. */
+    const ownerToken = require('crypto').randomBytes(16).toString('hex');
 
     // Rider pays the fare plus only their 12.50 DASH half.
     const totalWithProtection = Math.round(finalPrice + med.rider_share);
@@ -205,10 +210,10 @@ router.post('/request', async (req, res) => {
         payment_method, tracking_code, ride_pin, status,
         medical_protection, medical_fee, dash_fee, msouwout_medical_fee, driver_dash_share, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
-        pickup_address, dropoff_address,
+        pickup_address, dropoff_address, owner_token,
         created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())`,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
@@ -218,7 +223,7 @@ router.post('/request', async (req, res) => {
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
        delegated ? passenger_name : null, delegated ? passenger_phone : null,
-       from.address, to.address]
+       from.address, to.address, ownerToken]
     );
     }
 
@@ -226,6 +231,9 @@ router.post('/request', async (req, res) => {
       ride_id: rideId,
       tracking_code: trackingCode,
       ride_pin: ridePin,
+      /* ⚠️ The ONLY time this is ever sent. The ordering app keeps it and puts
+         it in the passenger's own link; nothing else can ask for it later. */
+      owner_token: ownerToken,
       status: 'searching',
       pickup_address: from.address,
       dropoff_address: to.address,
@@ -1009,6 +1017,26 @@ router.get('/:id/track', async (req, res) => {
     }
 
     const ride = result.rows[0];
+
+    /* ── WHO IS ASKING ────────────────────────────────────────────────────
+       27 Sep, his words: "Separate the passenger's private booking page from
+       the family tracking link."
+
+       The answer is a secret the viewer cannot invent. `?t=` is compared
+       against owner_token, which was handed to the ordering app once and never
+       again. It is NOT `?shared=1`, which is what this used to turn on - the
+       viewer types that, so a forwarded link became an owner link by deleting
+       four characters.
+
+       Compared in constant time: a plain === on a secret leaks its prefix to
+       anyone patient enough to time the answers. */
+    const givenToken = String(req.query.t || req.headers['x-ride-token'] || '');
+    const isOwner = (() => {
+      if (!ride.owner_token || !givenToken) return false;
+      const a = Buffer.from(givenToken, 'utf8');
+      const b = Buffer.from(String(ride.owner_token), 'utf8');
+      return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+    })();
     /* 🚨🚨 The PIN is GONE from this endpoint. `?pin=1` was decided by a query
        string that anybody could type, on a route reached with a tracking code
        that is designed to be forwarded - so "only the owner sees it" was never
@@ -1027,7 +1055,11 @@ router.get('/:id/track', async (req, res) => {
       dropoff: { lat: ride.dropoff_lat, lng: ride.dropoff_lng, address: ride.dropoff_address },
       pickup_address: ride.pickup_address,
       dropoff_address: ride.dropoff_address,
-      rider: { name: ride.customer_name, phone: ride.customer_phone },
+      /* ⛔ The family link gets NOTHING that identifies the passenger. Her
+         name and number are the whole reason this separation exists, so they
+         are attached below only when the token matched - never here, where a
+         later edit could widen them back without anyone noticing. */
+      is_owner: isOwner,
       driver: ride.driver_id ? {
         name: ride.driver_name,
         phone: ride.driver_phone,
@@ -1077,6 +1109,17 @@ router.get('/:id/track', async (req, res) => {
       trackResponse.orderer = { name: ride.orderer_name, phone: ride.orderer_phone };
       trackResponse.passenger = { name: ride.passenger_name, phone: ride.passenger_phone };
       trackResponse.share_link = `${req.protocol}://${req.get('host')}/api/rides/${ride.tracking_code}/track`;
+    }
+
+    /* Owner-only. Everything here is either personal data or a credential. */
+    if (isOwner) {
+      trackResponse.rider = { name: ride.customer_name, phone: ride.customer_phone };
+      /* The PIN comes back for the owner. It used to be read out of
+         localStorage, which loses it the moment she clears her browser or
+         opens the link on a different phone - and then she cannot start the
+         ride she paid for. A 32-character secret in the URL is a better key
+         than a value the browser may silently discard. */
+      trackResponse.ride_pin = ride.ride_pin;
     }
 
     res.json(trackResponse);

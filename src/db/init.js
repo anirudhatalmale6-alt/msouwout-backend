@@ -412,6 +412,17 @@ async function runMigrations(client) {
         /* A driver's login number is not necessarily his MonCash number, and
            paying the wrong one is not a bug you can take back. Separate field,
            filled in deliberately. */
+        /* 🚨 27 Sep - THE PRIVATE BOOKING LINK.
+           "Separate the passenger's private booking page from the family
+           tracking link." Until now there was ONE link. The page decided who
+           you were from ?shared=1 in the URL - a query string the VIEWER
+           types, so anyone who was forwarded the link could delete it and
+           become the owner. A gate the attacker controls is not a gate.
+           This is the owner's half: a random secret that only the ordering
+           app is ever given. No token => family view, and the family view
+           carries no name, no phone and no PIN. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS owner_token VARCHAR(64);
+        CREATE INDEX IF NOT EXISTS idx_rides_owner_token ON ride_requests (owner_token);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(50);
         /* 🚨 26 Sep: "allow drivers to receive their earnings through their
            bank accounts as well as MonCash and NatCash."
