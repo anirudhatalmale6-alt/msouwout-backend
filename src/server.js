@@ -105,6 +105,17 @@ app.listen(PORT, () => {
          marked paid — including when the passenger closed the app to do it. */
       require('./services/payments').startPoller();
       console.log('Payment poller started.');
+      /* Record what is owed on rides that finished before the ledger existed.
+         Bounded, idempotent - (ride_id, recipient_type) is unique, so a second
+         boot records nothing - and deliberately not awaited: a ledger problem
+         must never stop the API coming up. It writes only what is OWED; it
+         moves no money and never will. */
+      require('./services/earnings').backfill(500)
+        .then(out => {
+          if (out.rows) console.warn(`[EARNINGS] backfill recorded ${out.rows} entitlement(s) across ${out.rides} ride(s)`);
+          else console.log('[EARNINGS] ledger already up to date.');
+        })
+        .catch(e => console.error('[EARNINGS] backfill failed (API unaffected):', e.message));
     })
     .catch(err => { dbError = err; console.error('Database init failed:', err.message); });
 });
