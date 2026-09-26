@@ -49,6 +49,11 @@ const ADMIN_ONLY = [
      record that says she was paid back - so it must not be something a
      passenger can set on her own ride. */
   ['PATCH', /^\/api\/rides\/[^/]+\/refund$/],
+  /* The earnings ledger: every driver's name, payout number and what he is
+     owed. It moves no money, but it is the payroll - it does not belong to
+     anybody but Jeffery. Anchored so they cannot be reached as a ride id. */
+  ['GET', /^\/api\/rides\/earnings\/owed\/?$/],
+  ['POST', /^\/api\/rides\/earnings\/backfill\/?$/],
 
   // The full driver list: name, phone, e-mail, licence number, plate.
   ['GET', /^\/api\/drivers\/?$/],

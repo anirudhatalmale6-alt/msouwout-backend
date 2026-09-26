@@ -3,6 +3,7 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
 const pricing = require('../services/pricing');
+const earnings = require('../services/earnings');
 
 // POST /api/rides/account/delete — user-initiated deletion of a rider's data
 // Required by App Store Guideline 5.1.1(v).
@@ -738,6 +739,15 @@ router.patch('/:id/complete', async (req, res) => {
     const driverNet = Math.round((Number(r.driver_earning) || 0) - driverDash);        // 80% fare − 12.50
     const msouwoutRevenue = (Number(r.platform_fee) || 0) + (Number(r.msouwout_medical_fee) || 0); // 20% fare + 5
 
+    /* 🚨 Write who is owed what, now that the ride is finished. This used to be
+       computed for the response below and thrown away, which is why nothing
+       could ever answer "what does this driver have coming?"
+       Deliberately not awaited into the response path's success: a ledger
+       problem must never stop a driver marking his ride complete. It is safe
+       to run late or twice - (ride_id, recipient_type) is unique. */
+    earnings.recordForRide(req.params.id)
+      .catch(e => console.error('[EARNINGS] could not record for ride', r.tracking_code, e.message));
+
     res.json({
       status: 'completed',
       price: r.price,
@@ -913,6 +923,36 @@ router.patch('/:id/refund', async (req, res) => {
     res.json({ status: 'refunded', ride: ride.tracking_code, amount: paid, reference });
   } catch (err) {
     console.error('Refund record error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+/* GET /api/rides/earnings/owed — what is owed, grouped for a payout run.
+   READ ONLY, and admin-only: it lists drivers, their payout numbers and what
+   each is due. Nothing here moves money; the response says so out loud. */
+router.get('/earnings/owed', async (req, res) => {
+  try {
+    res.json(await earnings.owed({
+      since: req.query.since || null,
+      until: req.query.until || null,
+      recipient_type: req.query.type || null
+    }));
+  } catch (err) {
+    console.error('Earnings read error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+/* POST /api/rides/earnings/backfill — record entitlements for rides that
+   finished before the ledger existed. Idempotent: the unique constraint turns
+   a second run into a no-op rather than a second payment. */
+router.post('/earnings/backfill', async (req, res) => {
+  try {
+    const out = await earnings.backfill(Math.min(2000, parseInt(req.body && req.body.limit) || 500));
+    console.warn(`[EARNINGS] backfill recorded ${out.rows} entitlement(s) across ${out.rides} ride(s)`);
+    res.json({ ...out, note: 'Recorded as owed. Nothing has been paid.' });
+  } catch (err) {
+    console.error('Earnings backfill error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
   }
 });

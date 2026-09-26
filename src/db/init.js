@@ -379,6 +379,42 @@ async function runMigrations(client) {
         console.warn('[LAUNCH] cancellation fee set to 0 on ' + r.rows.length +
                      ' stored pricing row(s); it stays editable from the admin screen.');
       }
+      /* 🚨 THE EARNINGS LEDGER. Jeffery's first priority, 25 Sep.
+         Until now the money was worked out correctly on every ride and stored
+         as columns ON THE RIDE, then SUMmed whenever a screen asked. Nothing
+         said "this driver is owed this much for THIS ride, unpaid" - which is
+         what a payout run reads and what settles an argument with a driver.
+
+         🔑 UNIQUE (ride_id, recipient_type) is the whole safety design: a ride
+         can earn a driver exactly one entitlement, ever. Retries, double taps
+         and re-running the backfill all become no-ops instead of paying twice.
+         ⛔ Never drop that constraint to "fix" a duplicate-key error. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ride_earnings (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          ride_id UUID NOT NULL REFERENCES ride_requests(id) ON DELETE CASCADE,
+          tracking_code VARCHAR(32),
+          recipient_type VARCHAR(20) NOT NULL,   -- driver | dash | msouwout | referral
+          recipient_id VARCHAR(64),              -- driver uuid, or a partner code
+          recipient_phone VARCHAR(50),
+          amount INTEGER NOT NULL,
+          currency VARCHAR(8) NOT NULL DEFAULT 'HTG',
+          status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending | approved | paid
+          payout_reference VARCHAR(120),
+          paid_at TIMESTAMP WITH TIME ZONE,
+          earned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          CONSTRAINT ride_earnings_once UNIQUE (ride_id, recipient_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_earnings_status ON ride_earnings (status);
+        CREATE INDEX IF NOT EXISTS idx_earnings_recipient ON ride_earnings (recipient_type, recipient_id);
+        CREATE INDEX IF NOT EXISTS idx_earnings_earned ON ride_earnings (earned_at);
+        /* A driver's login number is not necessarily his MonCash number, and
+           paying the wrong one is not a bug you can take back. Separate field,
+           filled in deliberately. */
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(50);
+      `);
+
       /* One-time repair for rides cancelled BEFORE the column existed - today
          that is exactly one, MW-4RQDSL0. Only touches rows that are cancelled,
          actually paid, and carry no refund record yet, so re-running it can
