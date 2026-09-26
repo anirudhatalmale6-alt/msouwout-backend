@@ -1,5 +1,39 @@
 const express = require('express');
 const router = express.Router();
+
+/* ───────────────────────────────────────────────────────────────────────────
+   🚨 owner_token NEVER LEAVES EXCEPT WHERE IT IS MEANT TO.
+
+   Found within an hour of shipping the private booking link, by reading a live
+   response instead of trusting the design: GET /api/rides/:id does
+   `SELECT * FROM ride_requests` and answers anybody. So the whole gate was
+   walk-around-able -
+
+     family link -> /track returns ride_id -> GET /api/rides/<ride_id>
+                 -> owner_token -> full owner access.
+
+   A secret is only as private as the *least* careful query that touches the
+   row, and this table is read by `SELECT *` in a dozen places. Guarding the
+   ones I can think of today guards nothing tomorrow.
+
+   So it is DENY BY DEFAULT: every JSON body leaving this router has
+   owner_token stripped, recursively, unless the handler has explicitly said
+   `res.locals.sendOwnerToken = true`. Exactly ONE does: creating the ride,
+   which is the moment she is given it. The owner's /track does not need it -
+   it returns her PIN and her details, never the key itself. A route added
+   next month is safe without its author having to know this file exists. */
+function stripOwnerToken(value, depth = 0) {
+  if (depth > 8 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) { value.forEach(v => stripOwnerToken(v, depth + 1)); return value; }
+  if ('owner_token' in value) delete value.owner_token;
+  for (const k of Object.keys(value)) stripOwnerToken(value[k], depth + 1);
+  return value;
+}
+router.use((req, res, next) => {
+  const send = res.json.bind(res);
+  res.json = body => send(res.locals.sendOwnerToken ? body : stripOwnerToken(body));
+  next();
+});
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
 const pricing = require('../services/pricing');
@@ -231,7 +265,8 @@ router.post('/request', async (req, res) => {
       ride_id: rideId,
       tracking_code: trackingCode,
       ride_pin: ridePin,
-      /* ⚠️ The ONLY time this is ever sent. The ordering app keeps it and puts
+      /* ⚠️ One of only two responses allowed to carry it - see the strip
+         middleware at the top of this file. The ordering app keeps it and puts
          it in the passenger's own link; nothing else can ask for it later. */
       owner_token: ownerToken,
       status: 'searching',
@@ -260,6 +295,7 @@ router.post('/request', async (req, res) => {
       response.share_link = `${req.protocol}://${req.get('host')}/api/rides/${trackingCode}/track`;
     }
 
+    res.locals.sendOwnerToken = true;      // creating the ride: she must receive it
     res.status(201).json(response);
   } catch (err) {
     console.error('Request ride error:', err);
