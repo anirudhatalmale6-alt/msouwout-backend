@@ -34,7 +34,19 @@ const pool = require('../db/pool');
 /* Only a ride that is finished AND actually paid for creates an entitlement.
    A completed ride nobody paid for owes the driver nothing yet - and recording
    it as owed would put a debt on the platform for money it never received. */
-const ELIGIBLE = "status = 'completed' AND LOWER(COALESCE(payment_status,'')) = 'paid'";
+/* 🚨 26 Sep - ALIAS-QUALIFIED, and it has to stay that way. This was written
+   unqualified, and it is only ever used against RIDE_SELECT, which LEFT JOINs
+   drivers - and drivers has a status column of its own. Postgres answered
+   every call with `column reference "status" is ambiguous`, so recordForRide
+   and backfill BOTH threw, silently: the boot backfill logs and moves on by
+   design, and recordForRide is fired with .catch() on purpose so a ledger
+   problem cannot fail a ride.
+
+   The result was a ledger that had never recorded a single row in production
+   while every test passed - because the stand-in database in the tests is not
+   Postgres and has no opinion about ambiguity. What caught it was reading the
+   service's own boot log after deploying, not the test suite. */
+const ELIGIBLE = "r.status = 'completed' AND LOWER(COALESCE(r.payment_status,'')) = 'paid'";
 
 /* What each party is owed on one ride, taken from the ride's own columns.
    The arithmetic mirrors the response /complete has always returned, so the
@@ -124,16 +136,20 @@ async function backfill(limit = 500) {
 
 /* What is owed, grouped the way a daily payout run needs it. Reads only. */
 async function owed({ since, until, recipient_type } = {}) {
-  const where = [`status = 'pending'`];
+  /* Qualified with e. for the same reason as ELIGIBLE: this list is reused by
+     the byDriver query below, which joins drivers - and d.status would make
+     a bare `status` ambiguous. The totals query is given the same alias so one
+     WHERE can serve both. */
+  const where = [`e.status = 'pending'`];
   const params = [];
-  if (since) { params.push(since); where.push(`earned_at >= $${params.length}`); }
-  if (until) { params.push(until); where.push(`earned_at <= $${params.length}`); }
-  if (recipient_type) { params.push(recipient_type); where.push(`recipient_type = $${params.length}`); }
+  if (since) { params.push(since); where.push(`e.earned_at >= $${params.length}`); }
+  if (until) { params.push(until); where.push(`e.earned_at <= $${params.length}`); }
+  if (recipient_type) { params.push(recipient_type); where.push(`e.recipient_type = $${params.length}`); }
 
   const totals = await pool.query(
-    `SELECT recipient_type, COUNT(*) AS rides, COALESCE(SUM(amount),0)::INT AS total
-       FROM ride_earnings WHERE ${where.join(' AND ')}
-      GROUP BY recipient_type ORDER BY recipient_type`, params);
+    `SELECT e.recipient_type, COUNT(*) AS rides, COALESCE(SUM(e.amount),0)::INT AS total
+       FROM ride_earnings e WHERE ${where.join(' AND ')}
+      GROUP BY e.recipient_type ORDER BY e.recipient_type`, params);
 
   /* One line per driver - that IS the payout run, in the order it would go out. */
   const byDriver = await pool.query(
