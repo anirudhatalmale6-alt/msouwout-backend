@@ -85,6 +85,28 @@ tbody tr{border-top:1px solid var(--line)}
 .err{color:var(--red);font-size:.82rem;margin-top:10px}
 .foot{color:var(--muted);font-size:.72rem;margin-top:24px;line-height:1.5}
 .refresh{color:var(--blue);font-size:.8rem;font-weight:700;cursor:pointer;background:none;border:none;font-family:inherit}
+/* Payouts. Every action here is one a human has to be able to undo or explain
+   afterwards, so each row shows its reference and its state in words. */
+.po{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#fff}
+.po .ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;font-size:.82rem}
+.po .who{font-weight:700;margin-top:2px}
+.po .dest{color:var(--muted);font-size:.78rem;margin-top:2px}
+.po .amt{float:right;font-weight:800;font-size:1.05rem}
+.state{display:inline-block;font-size:.68rem;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-radius:999px;margin-top:6px}
+.state.pending_approval{background:#FFF4D6;color:#8A6100}
+.state.approved{background:#DDEBFF;color:#00209F}
+.state.paid{background:#DCF5E4;color:#0B6B2E}
+.state.cancelled{background:#EEE;color:#666}
+.acts{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+.acts button{font-family:inherit;font-size:.78rem;font-weight:700;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:#fff;cursor:pointer}
+.acts button.go{background:var(--blue);border-color:var(--blue);color:#fff}
+.acts button.bad{color:var(--red)}
+.acts input{font-family:inherit;font-size:.8rem;padding:7px 10px;border:1px solid var(--line);border-radius:9px;min-width:170px}
+.bankbox{margin-top:10px;padding:10px;border:1px dashed var(--line);border-radius:10px;background:#FAFBFC}
+.bankbox label{display:block;font-size:.7rem;color:var(--muted);font-weight:700;margin:6px 0 3px}
+.bankbox input{width:100%;box-sizing:border-box;font-family:inherit;font-size:.85rem;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.msg{font-size:.78rem;margin-top:8px;line-height:1.45}
+.msg.bad{color:var(--red)} .msg.good{color:#0B6B2E}
 </style>
 </head>
 <body>
@@ -127,6 +149,14 @@ tbody tr{border-top:1px solid var(--line)}
       <tbody id="dailyBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
     </table>
 
+    <h2>Owed to drivers <button class="refresh" style="font-size:.72rem" onclick="loadPayouts()">↻</button></h2>
+    <div class="sub" style="margin:-6px 0 12px">Recorded from completed, paid rides. Nothing below has been sent.</div>
+    <div id="owedList"><div class="empty">Loading…</div></div>
+
+    <h2>Payout runs</h2>
+    <div class="sub" style="margin:-6px 0 12px">Approve, make the transfer at your bank or wallet, then enter the transaction reference to close it.</div>
+    <div id="poList"><div class="empty">Loading…</div></div>
+
     <div id="dashErr" class="err"></div>
     <div class="foot">
       Amounts in HTG. Split per ride: fare 80% driver / 20% MsouWout; DASH 25 (12.50 rider + 12.50 driver) splits 20 to the DASH fund / 5 to MsouWout. Cancellations are free before pickup; after the grace window a small cancel fee goes to the driver. DASH is never charged on a cancelled ride.
@@ -140,7 +170,7 @@ function fmt(n){return (Math.round(n||0)).toLocaleString('en-US');}
 function unlock(){
   var s=document.getElementById('secret').value.trim();
   if(!s){document.getElementById('gateErr').textContent='Enter the admin code.';return;}
-  localStorage.setItem(KEY,s);load();
+  localStorage.setItem(KEY,s);load();loadPayouts();
 }
 function lock(){localStorage.removeItem(KEY);document.getElementById('dash').classList.add('hidden');document.getElementById('gate').classList.remove('hidden');document.getElementById('secret').value='';}
 function load(){
@@ -179,7 +209,128 @@ function load(){
     }
   });
 }
-if(localStorage.getItem(KEY)){load();}
+
+/* ── PAYOUTS ──────────────────────────────────────────────────────────────
+   Three separate presses, on purpose: start a run, approve it, then record
+   the transfer. Jeffery asked for the approval step to stay ("daily payouts
+   still require administrator approval"), and the reference step is what
+   makes a payout impossible to make twice — the server refuses a second
+   settlement and refuses a reference already used on another run. */
+function hdr(){return {'x-admin-secret':localStorage.getItem(KEY)||'','Content-Type':'application/json'};}
+function api(url,opts){
+  return fetch(url,Object.assign({headers:hdr()},opts||{})).then(function(r){
+    return r.json().catch(function(){return {};}).then(function(j){
+      if(!r.ok) throw new Error(j.error||('Request failed ('+r.status+')'));
+      return j;
+    });
+  });
+}
+function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+
+function say(id,text,good){
+  var el=document.getElementById(id); if(!el) return;
+  el.className='msg '+(good?'good':'bad'); el.textContent=text;
+}
+
+function loadPayouts(){
+  api('/api/rides/earnings/owed').then(function(d){
+    var rows=(d.drivers||[]).filter(function(x){return Number(x.total)>0;});
+    document.getElementById('owedList').innerHTML = rows.length ? rows.map(function(x){
+      var id=esc(x.recipient_id||'');
+      return '<div class="po"><span class="amt">'+fmt(x.total)+' <small>HTG</small></span>'+
+        '<div class="who">'+esc(x.full_name||'Driver')+'</div>'+
+        '<div class="dest">'+fmt(x.rides)+' ride(s) · '+esc(x.recipient_phone||'no payout number on file')+'</div>'+
+        '<div class="acts">'+
+          '<button class="go" onclick="startRun(\''+id+'\')">Start payout</button>'+
+          '<button onclick="toggleBank(\''+id+'\')">Bank details</button>'+
+        '</div>'+
+        '<div id="bank-'+id+'"></div><div id="msg-'+id+'" class="msg"></div></div>';
+    }).join('') : '<div class="empty">Nothing is owed right now.</div>';
+  }).catch(function(e){ document.getElementById('owedList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; });
+
+  api('/api/payouts?limit=50').then(function(d){
+    var rows=d.payouts||[];
+    document.getElementById('poList').innerHTML = rows.length ? rows.map(function(p){
+      var acts='';
+      if(p.status==='pending_approval'){
+        acts='<button class="go" onclick="approveRun(\''+p.id+'\')">Approve</button>'+
+             '<button class="bad" onclick="cancelRun(\''+p.id+'\')">Cancel</button>';
+      } else if(p.status==='approved'){
+        acts='<input id="ref-'+p.id+'" placeholder="Bank / wallet reference">'+
+             '<button class="go" onclick="settleRun(\''+p.id+'\')">Mark paid</button>'+
+             '<button class="bad" onclick="cancelRun(\''+p.id+'\')">Cancel</button>';
+      } else if(p.status==='paid'){
+        acts='<span class="dest">Transfer reference '+esc(p.bank_reference)+'</span>';
+      }
+      return '<div class="po"><span class="amt">'+fmt(p.amount)+' <small>HTG</small></span>'+
+        '<div class="ref">'+esc(p.reference)+'</div>'+
+        '<div class="who">'+esc(p.recipient_name||p.recipient_type)+'</div>'+
+        '<div class="dest">'+esc(p.destination||p.method)+' · '+fmt(p.entitlements)+' ride(s)</div>'+
+        '<span class="state '+esc(p.status)+'">'+esc(p.status.replace(/_/g,' '))+'</span>'+
+        (acts?'<div class="acts">'+acts+'</div>':'')+
+        '<div id="pmsg-'+p.id+'" class="msg"></div></div>';
+    }).join('') : '<div class="empty">No payout runs yet.</div>';
+  }).catch(function(e){ document.getElementById('poList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; });
+}
+
+function startRun(id){
+  api('/api/payouts/batch',{method:'POST',body:JSON.stringify({recipient_id:id})})
+    .then(function(){ loadPayouts(); })
+    .catch(function(e){ say('msg-'+id,e.message); });
+}
+function approveRun(id){
+  api('/api/payouts/'+id+'/approve',{method:'POST',body:'{}'})
+    .then(function(){ loadPayouts(); })
+    .catch(function(e){ say('pmsg-'+id,e.message); });
+}
+function settleRun(id){
+  var el=document.getElementById('ref-'+id);
+  var ref=(el&&el.value||'').trim();
+  if(!ref){ say('pmsg-'+id,'Enter the reference your bank or wallet gave you. It is the proof this payout was made.'); return; }
+  api('/api/payouts/'+id+'/paid',{method:'POST',body:JSON.stringify({bank_reference:ref})})
+    .then(function(){ loadPayouts(); load(); })
+    .catch(function(e){ say('pmsg-'+id,e.message); });
+}
+function cancelRun(id){
+  /* No confirm() here would be careless - this releases money back into the
+     pot and the button sits next to Approve. */
+  if(!window.confirm('Cancel this payout? The amounts go back to what is owed and can be paid in the next run.')) return;
+  api('/api/payouts/'+id+'/cancel',{method:'POST',body:JSON.stringify({reason:'cancelled from the money page'})})
+    .then(function(){ loadPayouts(); })
+    .catch(function(e){ say('pmsg-'+id,e.message); });
+}
+
+/* The account number. This is the only screen in MsouWout that can read or
+   write one, and it is behind the admin code. */
+function toggleBank(id){
+  var box=document.getElementById('bank-'+id);
+  if(box.innerHTML){ box.innerHTML=''; return; }
+  box.innerHTML='<div class="bankbox">Loading…</div>';
+  api('/api/payouts/driver/'+id+'/bank').then(function(d){
+    var v=d.driver||{};
+    box.innerHTML='<div class="bankbox">'+
+      '<div class="dest">Paid by: <b>'+esc(v.payout_method||'moncash')+'</b>'+
+      (v.payout_phone?' · '+esc(v.payout_phone):'')+'</div>'+
+      '<label>Bank name</label><input id="bn-'+id+'" value="'+esc(v.bank_name)+'">'+
+      '<label>Account holder</label><input id="bh-'+id+'" value="'+esc(v.bank_account_name)+'">'+
+      '<label>Account number</label><input id="ba-'+id+'" value="'+esc(v.bank_account_number)+'">'+
+      '<div class="acts"><button class="go" onclick="saveBank(\''+id+'\')">Save</button>'+
+      '<button onclick="toggleBank(\''+id+'\')">Close</button></div>'+
+      (d.locked_by?'<div class="msg bad">Locked: payout '+esc(d.locked_by.reference)+' is '+esc(d.locked_by.status)+'.</div>':'')+
+      '</div>';
+  }).catch(function(e){ box.innerHTML='<div class="bankbox msg bad">'+esc(e.message)+'</div>'; });
+}
+function saveBank(id){
+  api('/api/payouts/driver/'+id+'/bank',{method:'PUT',body:JSON.stringify({
+    bank_name:document.getElementById('bn-'+id).value,
+    bank_account_name:document.getElementById('bh-'+id).value,
+    bank_account_number:document.getElementById('ba-'+id).value
+  })}).then(function(d){ say('msg-'+id,'Saved. Payouts go to '+d.destination,true); toggleBank(id); })
+     .catch(function(e){ say('msg-'+id,e.message); });
+}
+
+if(localStorage.getItem(KEY)){load();loadPayouts();}
 document.getElementById('secret').addEventListener('keydown',function(e){if(e.key==='Enter')unlock();});
 </script>
 </body>

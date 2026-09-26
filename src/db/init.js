@@ -413,6 +413,49 @@ async function runMigrations(client) {
            paying the wrong one is not a bug you can take back. Separate field,
            filled in deliberately. */
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(50);
+        /* 🚨 26 Sep: "allow drivers to receive their earnings through their
+           bank accounts as well as MonCash and NatCash."
+           ⛔ The account NUMBER is not writable by the driver app, and this is
+           deliberate: POST /api/drivers/login authenticates on a PHONE NUMBER
+           ALONE - the PIN the app asks for is never checked against anything,
+           because no pin column exists. Anyone who knows a driver's number can
+           already open his account. Putting a bank account behind that door
+           would be handing it to the same people. Until the login verifies
+           something, these three are written by an administrator only.
+           Flagged to Jeffery in writing. */
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS payout_method VARCHAR(20) NOT NULL DEFAULT 'moncash';
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_name VARCHAR(120);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account_name VARCHAR(160);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(64);
+      `);
+      /* A payout: one recipient, one batch of entitlements, one reference.
+         🚨 reference is UNIQUE and paid_at is set once - together they are what
+         "cannot be paid twice" actually means. The gateway's own withdrawal API
+         refuses a duplicate reference too, so the same string protects us on
+         both sides of the wire. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS driver_payouts (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          reference VARCHAR(64) NOT NULL UNIQUE,
+          recipient_type VARCHAR(20) NOT NULL DEFAULT 'driver',
+          recipient_id VARCHAR(64),
+          recipient_name VARCHAR(160),
+          method VARCHAR(20) NOT NULL,            -- moncash | natcash | bank
+          destination VARCHAR(160),               -- wallet number, or bank account name
+          amount INTEGER NOT NULL,
+          currency VARCHAR(8) NOT NULL DEFAULT 'HTG',
+          status VARCHAR(24) NOT NULL DEFAULT 'pending_approval',
+          bank_reference VARCHAR(120),
+          note TEXT,
+          approved_at TIMESTAMP WITH TIME ZONE,
+          paid_at TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_payouts_status ON driver_payouts (status);
+        CREATE INDEX IF NOT EXISTS idx_payouts_recipient ON driver_payouts (recipient_type, recipient_id);
+        /* Which payout an entitlement went into. */
+        ALTER TABLE ride_earnings ADD COLUMN IF NOT EXISTS payout_id UUID;
+        CREATE INDEX IF NOT EXISTS idx_earnings_payout ON ride_earnings (payout_id);
       `);
 
       /* One-time repair for rides cancelled BEFORE the column existed - today

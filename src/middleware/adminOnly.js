@@ -55,6 +55,25 @@ const ADMIN_ONLY = [
   ['GET', /^\/api\/rides\/earnings\/owed\/?$/],
   ['POST', /^\/api\/rides\/earnings\/backfill\/?$/],
 
+  /* 🚨 26 Sep - PAYOUTS. Two different things are behind this gate and only
+     one of them is obvious:
+       - the payout run itself (creating, approving, settling). Approval is
+         Jeffery's, by his own instruction, so it cannot be a route anybody
+         can POST to.
+       - the BANK ACCOUNT NUMBER. "Bank account details are private and
+         accessible only to authorized administrators." /driver/:id/bank is
+         the ONLY path that returns or writes an account number, which is what
+         makes that sentence checkable instead of merely intended.
+     ⚠️ Anchored so the two DRIVER-facing routes stay open - the driver
+     dashboard carries no credential and would break instantly:
+       GET /api/payouts/driver/:id          (his own earnings, no account number)
+       PUT /api/payouts/driver/:id/method   (which wallet he wants paying on) */
+  ['GET', /^\/api\/payouts\/?$/],
+  ['POST', /^\/api\/payouts\/batch\/?$/],
+  ['POST', /^\/api\/payouts\/[^/]+\/(approve|paid|cancel)$/],
+  ['GET', /^\/api\/payouts\/driver\/[^/]+\/bank\/?$/],
+  ['PUT', /^\/api\/payouts\/driver\/[^/]+\/bank\/?$/],
+
   // The full driver list: name, phone, e-mail, licence number, plate.
   ['GET', /^\/api\/drivers\/?$/],
   ['GET', /^\/api\/drivers\/stats\/?$/],
