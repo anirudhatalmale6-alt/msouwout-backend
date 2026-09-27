@@ -406,6 +406,25 @@ async function applyToSubject(payment) {
         WHERE id=$1`,
       [payment.subject_id, payment.id, payment.method]
     );
+
+    /* 🚨 A ride earns only when it is BOTH completed and paid, and those two
+       facts arrive from different places: the driver presses Fini, and this
+       poller hears back from the gateway. recordForRide used to be called from
+       completion ALONE - so if the money confirmed AFTER the ride finished,
+       the entitlement was never written and nothing retried it until the next
+       server restart.
+
+       Calling it here too means it runs on whichever of the two happens LAST,
+       which is the only moment the condition can actually become true. Safe to
+       run twice: (ride_id, recipient_type) is unique, and on a ride that is
+       not finished yet this records nothing and returns.
+
+       Not awaited, and swallowed: a ledger fault must never turn a successful
+       payment into an error the passenger sees. */
+    require('./earnings').recordForRide(payment.subject_id)
+      .then(out => { if (out && out.recorded) {
+        console.warn(`[EARNINGS] recorded ${out.recorded} entitlement(s) on payment for ${out.ride}`); } })
+      .catch(e => console.error('[EARNINGS] could not record after payment:', e.message));
   }
   /* Stage 2: mirror into the HaitiBiznis Transaction ledger here, with
      subject_type/subject_id as the reference back. One place, not many. */
@@ -483,5 +502,10 @@ module.exports = {
   availableMethods, allMethods, providerForMethod, newReference,
   providerConfig, setProviderConfig, invalidateProviderConfig,
   startPoller, stopPoller,
+  /* Exported so the ledger hook inside it can be exercised directly. It is the
+     single point where a ride becomes paid, and the ordering it now guards -
+     payment landing after completion - is not reachable any other way without
+     standing up a fake gateway. */
+  applyToSubject,
   MIN_HTG, MAX_ATTEMPTS, PROVIDERS
 };
