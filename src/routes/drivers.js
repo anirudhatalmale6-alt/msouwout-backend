@@ -480,15 +480,87 @@ router.post('/login', async (req, res) => {
 // Required by App Store Guideline 5.1.1(v): apps that create accounts must
 // let the user delete their account from within the app.
 router.post('/account/delete', async (req, res) => {
+  /* 🚨 27 Sep: THIS HAS NEVER WORKED FOR A DRIVER WHO HAS TAKEN A RIDE.
+     It was a bare DELETE, and ride_requests.driver_id is a foreign key, so
+     Postgres refused:
+
+       update or delete on table "drivers" violates foreign key constraint
+       "ride_requests_driver_id_fkey" on table "ride_requests"
+
+     The route answered 500 "Delete failed" and the driver was left with an
+     account he had asked to remove. App Store guideline 5.1.1(v) requires
+     this to work - it is the rule MsouWout was already rejected under once.
+     Found by a dry run against the live system, not by reading the code.
+
+     The references are DISCOVERED from the database rather than listed here.
+     A hard-coded list of tables is right on the day it is written and wrong
+     the first time somebody adds a column - and the failure mode is this same
+     500, months later, for one unlucky driver. */
+  const client = await pool.connect();
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone number is required' });
     const clean = phone.replace(/[^0-9+]/g, '');
-    await pool.query('DELETE FROM drivers WHERE phone = $1 OR phone = $2', [clean, phone.trim()]);
-    res.json({ deleted: true });
+
+    const found = await client.query(
+      'SELECT id, full_name FROM drivers WHERE phone = $1 OR phone = $2', [clean, phone.trim()]);
+    if (!found.rows.length) return res.json({ deleted: true, note: 'No such account.' });
+    const ids = found.rows.map(r => r.id);
+
+    /* ⛔ Not mid-ride. Deleting a driver who is carrying someone strands the
+       passenger with a car she can no longer see or call. */
+    const busy = await client.query(
+      `SELECT tracking_code FROM ride_requests
+        WHERE driver_id = ANY($1::uuid[])
+          AND status IN ('accepted','arrived','in_progress') LIMIT 1`, [ids]);
+    if (busy.rows.length) {
+      return res.status(409).json({
+        error: 'Fini oswa anile kous ou an anvan ou efase kont ou.',
+        error_en: 'Finish or cancel your current ride before deleting your account.',
+        ride: busy.rows[0].tracking_code
+      });
+    }
+
+    await client.query('BEGIN');
+
+    /* Every column in the database that points at drivers. Nullable ones are
+       detached - a completed ride is an accounting record and must survive the
+       driver leaving. Non-nullable ones are live state and go with him. */
+    const refs = await client.query(`
+      SELECT tc.table_name, kcu.column_name, col.is_nullable
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_name = tc.constraint_name
+        JOIN information_schema.constraint_column_usage ccu
+          ON ccu.constraint_name = tc.constraint_name
+        JOIN information_schema.columns col
+          ON col.table_name = tc.table_name AND col.column_name = kcu.column_name
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND ccu.table_name = 'drivers'
+         AND tc.table_name <> 'drivers'`);
+
+    const detached = [];
+    for (const r of refs.rows) {
+      /* Identifiers come from the catalog, never from the request, but they
+         still go through format(%I) rather than string concatenation. */
+      const sql = r.is_nullable === 'YES'
+        ? `UPDATE "${r.table_name}" SET "${r.column_name}" = NULL WHERE "${r.column_name}" = ANY($1::uuid[])`
+        : `DELETE FROM "${r.table_name}" WHERE "${r.column_name}" = ANY($1::uuid[])`;
+      const out = await client.query(sql, [ids]);
+      if (out.rowCount) detached.push(`${r.table_name}.${r.column_name}:${out.rowCount}`);
+    }
+
+    const del = await client.query('DELETE FROM drivers WHERE id = ANY($1::uuid[])', [ids]);
+    await client.query('COMMIT');
+
+    console.warn(`[DRIVER DELETE] removed ${del.rowCount} account(s); detached ${detached.join(', ') || 'nothing'}`);
+    res.json({ deleted: true, accounts: del.rowCount, detached });
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Driver delete error:', err);
     res.status(500).json({ error: 'Delete failed' });
+  } finally {
+    client.release();
   }
 });
 
