@@ -52,6 +52,13 @@ const ADMIN_ONLY = [
   /* The earnings ledger: every driver's name, payout number and what he is
      owed. It moves no money, but it is the payroll - it does not belong to
      anybody but Jeffery. Anchored so they cannot be reached as a ride id. */
+  /* 🚨 27 Sep: the money report checked ADMIN_SECRET and NOTHING ELSE. That
+     value is `generateValue: true` in render.yaml - Render invented it and it
+     has never been revealed to anybody, so /money answered 401 to Jeffery, to
+     me, and to everyone. A report nobody can open is not a report.
+     Listing it here means it accepts the stored admin password like the rest
+     of the system, which is the credential he actually has. */
+  ['GET', /^\/api\/rides\/reports\/money\/?$/],
   ['GET', /^\/api\/rides\/earnings\/owed\/?$/],
   ['POST', /^\/api\/rides\/earnings\/backfill\/?$/],
 

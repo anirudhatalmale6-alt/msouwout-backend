@@ -341,10 +341,11 @@ router.post('/history', async (req, res) => {
 // Defaults to the last 24 hours (the payout/settlement window) plus a 7-day daily series.
 router.get('/reports/money', async (req, res) => {
   try {
-    if (process.env.ADMIN_SECRET) {
-      const secret = req.headers['x-admin-secret'] || req.query.secret;
-      if (secret !== process.env.ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
-    }
+    /* The gate for this route is middleware/adminOnly, mounted app-wide before
+       the routers. It accepts EITHER ADMIN_SECRET or the stored admin
+       password; the check that used to live here knew only the first, which
+       is the one nobody has. Removing it does not open the door - it stops the
+       door refusing the person holding the key. */
 
     const to = req.query.to ? new Date(req.query.to) : new Date();
     const from = req.query.from ? new Date(req.query.from) : new Date(to.getTime() - 24 * 60 * 60 * 1000);
