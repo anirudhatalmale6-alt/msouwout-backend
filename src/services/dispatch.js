@@ -205,12 +205,26 @@ async function releaseAbandoned(limit = 100) {
            AND COALESCE(accepted_at, created_at) < NOW() - make_interval(mins => $1)
          ORDER BY created_at
          LIMIT $2)
-      RETURNING tracking_code`,
+      RETURNING id, tracking_code, pickup_address, last_driver_id`,
     [RELEASE_ACCEPTED_AFTER_MIN, limit, KEEP_WAITING_MIN]);
   if (q.rows.length) {
     console.warn('[DISPATCH] released ' + q.rows.length +
       ' ride(s) a driver took and never started: ' +
       q.rows.map(r => r.tracking_code).join(', '));
+    /* Tell the driver it is no longer his, for the same reason the passenger
+       is told: he may be on his way to her right now. Required lazily so this
+       module still loads for anything that does not send notifications, and
+       never awaited - a push service must not hold up the sweep. */
+    for (const row of q.rows) {
+      if (!row.last_driver_id) continue;
+      try {
+        require('./driverAlerts')
+          .alertRideGone(row.last_driver_id, row, 'released')
+          .catch(e => console.error('[DISPATCH] release notice failed:', e.message));
+      } catch (e) {
+        console.error('[DISPATCH] release notice unavailable:', e.message);
+      }
+    }
   }
   return q.rows;
 }

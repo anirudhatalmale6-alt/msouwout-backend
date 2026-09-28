@@ -1027,6 +1027,17 @@ router.patch('/:id/cancel', async (req, res) => {
       [reason || null, cancelledBy, cancelFee, req.params.id, refundDue]
     );
 
+    /* 🚨 28 Sep: "She cancelled it but i never received a text."
+       Until now alertNewRide was the ONLY notification in the whole system -
+       a driver was told when work ARRIVED and never when it went away, so he
+       could be riding to a passenger who cancelled ten minutes earlier.
+       ⛔ Not awaited: a slow push service must never slow down a cancellation,
+       and a broken one must never fail it. */
+    if (r.driver_id && cancelledBy === 'rider') {
+      alerts.alertRideGone(r.driver_id, r, 'cancelled_by_rider')
+        .catch(e => console.error('[ALERTS] cancel notice failed (ride still cancelled):', e.message));
+    }
+
     if (refundDue > 0) {
       /* Loud on purpose. Nobody is watching a database column during a launch. */
       console.warn(`[REFUND OWED] ride ${r.tracking_code} — paid ${paidAmount} HTG, ` +

@@ -145,4 +145,64 @@ async function alertNewRide(ride) {
   return { sent, gone };
 }
 
-module.exports = { publicKey, subscribe, unsubscribe, alertNewRide, init };
+/* Tell ONE driver that a ride he was holding is no longer his.
+ *
+ * 28 Sep, Jeffery: "She cancelled it but i never received a text and its still
+ * active." He is right on both halves. The card staying put is fixed on the
+ * page; this is the other half - alertNewRide was the ONLY notification in the
+ * system, so a driver was told when work arrived and never when it went away.
+ * He can be on his way to a passenger who cancelled ten minutes ago.
+ *
+ * ⛔ Sent to that driver's phones only, never broadcast: nobody else needs to
+ * know, and the ride is already off the board for everybody.
+ */
+async function alertRideGone(driverId, ride, reason) {
+  if (!driverId) return { sent: 0, reason: 'no_driver' };
+  try {
+    await init();
+  } catch (e) {
+    console.error('[ALERTS] no VAPID keys, cannot notify:', e.message);
+    return { sent: 0, reason: 'no_keys' };
+  }
+
+  const subs = await pool.query(
+    `SELECT endpoint, subscription FROM driver_push
+      WHERE driver_id = $1 AND failures < 5`, [driverId]);
+  if (!subs.rows.length) return { sent: 0, reason: 'nobody_subscribed' };
+
+  const TITLES = {
+    cancelled_by_rider: '❌ Kliyan an anile kous la',
+    released: '⏳ Kous la retounen nan lis la',
+    cancelled: '❌ Kous la anile'
+  };
+  const payload = JSON.stringify({
+    title: TITLES[reason] || TITLES.cancelled,
+    body: [ride.tracking_code, ride.pickup_address].filter(Boolean).join(' — ').slice(0, 160),
+    /* ⚠️ The SAME tag as the new-ride alert for this ride, so "gone" REPLACES
+       "here is a ride" on his lock screen instead of sitting under it. */
+    tag: 'ride-' + ride.id,
+    url: 'https://msouwout.com/driver-login.html',
+    tracking_code: ride.tracking_code
+  });
+
+  let sent = 0;
+  await Promise.all(subs.rows.map(async row => {
+    try {
+      await webpush.sendNotification(row.subscription, payload, { TTL: 900 });
+      sent++;
+      await pool.query('UPDATE driver_push SET last_ok = NOW(), failures = 0 WHERE endpoint = $1',
+                       [row.endpoint]);
+    } catch (err) {
+      if (err.statusCode === 404 || err.statusCode === 410) {
+        await pool.query('DELETE FROM driver_push WHERE endpoint = $1', [row.endpoint]);
+      } else {
+        await pool.query('UPDATE driver_push SET failures = failures + 1 WHERE endpoint = $1',
+                         [row.endpoint]);
+      }
+    }
+  }));
+  console.warn(`[ALERTS] ${ride.tracking_code}: told ${sent} phone(s) the ride is gone (${reason})`);
+  return { sent };
+}
+
+module.exports = { publicKey, subscribe, unsubscribe, alertNewRide, alertRideGone, init };
