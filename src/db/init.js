@@ -422,6 +422,15 @@ async function runMigrations(client) {
            app is ever given. No token => family view, and the family view
            carries no name, no phone and no PIN. */
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS owner_token VARCHAR(64);
+        /* 🚨 27 Sep: "Make sure that a delayed or lost server response never
+           creates duplicate bookings." The order POST had NO idempotency at
+           all - a retry, a double tap, or the app recovering from a lost
+           answer would book a second ride and send a second driver.
+           The browser makes one id per booking ATTEMPT and reuses it on every
+           retry; UNIQUE is what makes that a promise rather than a hope. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS client_request_id VARCHAR(64);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_rides_client_request
+          ON ride_requests (client_request_id) WHERE client_request_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_rides_owner_token ON ride_requests (owner_token);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(50);
         /* 🚨 26 Sep: "allow drivers to receive their earnings through their

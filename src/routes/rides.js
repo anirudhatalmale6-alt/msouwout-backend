@@ -220,6 +220,31 @@ router.post('/request', async (req, res) => {
        not come from Math.random(). Returned exactly once, at creation. */
     const ownerToken = require('crypto').randomBytes(16).toString('hex');
 
+    /* ⛔ NO DUPLICATE BOOKINGS. The browser sends the same id for every retry
+       of one booking attempt. If we have already made that ride, hand the SAME
+       one back - key and all - instead of booking a second car. Checked before
+       the insert for the common case, and caught again on the unique index
+       below for the case where two retries arrive at once. */
+    const clientReqId = String((req.body || {}).client_request_id || '').slice(0, 64) || null;
+    if (clientReqId) {
+      const seen = await pool.query(
+        `SELECT id, tracking_code, ride_pin, owner_token, status, price,
+                total_with_protection, pickup_address, dropoff_address
+           FROM ride_requests WHERE client_request_id = $1`, [clientReqId]);
+      if (seen.rows.length) {
+        const r0 = seen.rows[0];
+        console.warn(`[RIDES] replayed booking ${clientReqId} -> ${r0.tracking_code}`);
+        res.locals.sendOwnerToken = true;
+        return res.status(201).json({
+          ride_id: r0.id, tracking_code: r0.tracking_code, ride_pin: r0.ride_pin,
+          owner_token: r0.owner_token, status: r0.status, price: r0.price,
+          total_with_protection: r0.total_with_protection,
+          pickup_address: r0.pickup_address, dropoff_address: r0.dropoff_address,
+          duplicate: true, message: 'Kous ou deja anrejistre.'
+        });
+      }
+    }
+
     // Rider pays the fare plus only their 12.50 DASH half.
     const totalWithProtection = Math.round(finalPrice + med.rider_share);
 
@@ -244,10 +269,10 @@ router.post('/request', async (req, res) => {
         payment_method, tracking_code, ride_pin, status,
         medical_protection, medical_fee, dash_fee, msouwout_medical_fee, driver_dash_share, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
-        pickup_address, dropoff_address, owner_token,
+        pickup_address, dropoff_address, owner_token, client_request_id,
         created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW())`,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
@@ -257,7 +282,7 @@ router.post('/request', async (req, res) => {
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
        delegated ? passenger_name : null, delegated ? passenger_phone : null,
-       from.address, to.address, ownerToken]
+       from.address, to.address, ownerToken, clientReqId]
     );
     }
 
@@ -298,6 +323,31 @@ router.post('/request', async (req, res) => {
     res.locals.sendOwnerToken = true;      // creating the ride: she must receive it
     res.status(201).json(response);
   } catch (err) {
+    /* 23505 = unique_violation on client_request_id: two retries of the SAME
+       booking arrived close enough together that both passed the check above.
+       The first one won and made the ride; this one must hand back that ride,
+       not an error and certainly not a second car. */
+    if (err && err.code === '23505' && /client_request/.test(err.constraint || err.detail || '')) {
+      try {
+        const again = await pool.query(
+          `SELECT id, tracking_code, ride_pin, owner_token, status, price,
+                  total_with_protection, pickup_address, dropoff_address
+             FROM ride_requests WHERE client_request_id = $1`,
+          [String((req.body || {}).client_request_id || '').slice(0, 64)]);
+        if (again.rows.length) {
+          const r1 = again.rows[0];
+          console.warn(`[RIDES] duplicate booking race resolved -> ${r1.tracking_code}`);
+          res.locals.sendOwnerToken = true;
+          return res.status(201).json({
+            ride_id: r1.id, tracking_code: r1.tracking_code, ride_pin: r1.ride_pin,
+            owner_token: r1.owner_token, status: r1.status, price: r1.price,
+            total_with_protection: r1.total_with_protection,
+            pickup_address: r1.pickup_address, dropoff_address: r1.dropoff_address,
+            duplicate: true, message: 'Kous ou deja anrejistre.'
+          });
+        }
+      } catch (e2) { console.error('duplicate replay failed:', e2.message); }
+    }
     console.error('Request ride error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
   }
@@ -1034,6 +1084,73 @@ router.post('/:id/emergency', async (req, res) => {
 });
 
 // GET /api/rides/:id/track — Get live tracking data for a ride
+/* ───────────────────────────────────────────────────────────────────────────
+   "Fix the PIN recovery problem properly. We cannot have passengers contacting
+   you to retrieve their PIN manually." - 27 Sep.
+
+   The PIN and the private key are sent once, in the answer to the booking. If
+   that answer is lost, or she clears her browser, or opens her link on another
+   phone, she has neither - and the only route back was me reading it off the
+   database. That is not a product.
+
+   She proves who she is with the PHONE NUMBER SHE BOOKED WITH. That is the
+   same bar the rest of the passenger side uses, and it is a real second factor
+   here: the tracking code alone does not open it, and the phone number alone
+   is useless without the code.
+
+   ⚠️ The answer is deliberately the SAME for "no such ride" and "wrong
+   number". Different answers turn this into a way to ask which phone number
+   booked a given ride.
+   =========================================================================== */
+router.post('/:id/recover', async (req, res) => {
+  try {
+    const param = req.params.id;
+    const given = String((req.body || {}).phone || '').replace(/[^0-9]/g, '');
+    if (given.length < 6) {
+      return res.status(400).json({ error: 'Mete nimewo telefòn ou te itilize pou kòmande a.' });
+    }
+    const isUUID = /^[0-9a-f]{8}-/.test(param);
+    const q = await pool.query(
+      `SELECT id, tracking_code, ride_pin, owner_token, status,
+              customer_phone, passenger_phone, orderer_phone, is_delegated
+         FROM ride_requests WHERE ${isUUID ? 'id = $1' : 'tracking_code = $1'}`, [param]);
+
+    const DENY = { error: 'Nou pa jwenn yon kous ki gen nimewo sa a.' };
+    if (!q.rows.length) return res.status(404).json(DENY);
+    const ride = q.rows[0];
+
+    /* Any of the numbers attached to the ride may claim it: on a delegated
+       ride the person IN the car is not the person who ordered it, and both
+       have a legitimate need for the PIN. Compared on the last 8 digits so
+       +509 / 509 / bare local all match. */
+    const tail = v => String(v || '').replace(/[^0-9]/g, '').slice(-8);
+    const mine = tail(given);
+    const allowed = [ride.customer_phone, ride.passenger_phone, ride.orderer_phone]
+      .map(tail).filter(Boolean);
+    if (!mine || !allowed.includes(mine)) return res.status(404).json(DENY);
+
+    if (['completed', 'cancelled'].includes(ride.status)) {
+      return res.status(409).json({ error: 'Kous sa a fini deja.', status: ride.status });
+    }
+
+    console.warn(`[RECOVER] PIN + key re-issued for ${ride.tracking_code}`);
+    /* Hand back BOTH. The key is what makes her own page work again - without
+       it she would recover the PIN and still be treated as a stranger. */
+    res.locals.sendOwnerToken = true;
+    res.json({
+      ok: true,
+      ride_id: ride.id,
+      tracking_code: ride.tracking_code,
+      ride_pin: ride.ride_pin,
+      owner_token: ride.owner_token,
+      status: ride.status
+    });
+  } catch (err) {
+    console.error('Recover error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.get('/:id/track', async (req, res) => {
   try {
     const param = req.params.id;
