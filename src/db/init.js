@@ -15,6 +15,23 @@ async function seedDemoAccounts(client) {
   try {
     const demo = fs.readFileSync(path.join(__dirname, 'seed-demo.sql'), 'utf8');
     await client.query(demo);
+
+    /* 🚨 APPLE MUST STILL BE ABLE TO SIGN IN. From 28 Sep the login verifies a
+       PIN, and a driver without one is asked to choose one - correct for a real
+       driver, and an extra step a reviewer was never told about. App Review
+       Information says phone 0000 0000, PIN 0000, so that is what this account
+       has. It cannot be done in seed-demo.sql because the hash is scrypt.
+       ⛔ Only ever set when missing, so a real PIN is never overwritten, and
+       ⛔ only for the reserved demo number. */
+    const already = await client.query(
+      `SELECT id, pin_hash FROM drivers WHERE phone = '+50900000000'`);
+    if (already.rows.length && !already.rows[0].pin_hash) {
+      const hash = await require('../services/driverAuth').makeHash('0000');
+      await client.query(
+        `UPDATE drivers SET pin_hash = $2, pin_set_at = NOW() WHERE id = $1 AND pin_hash IS NULL`,
+        [already.rows[0].id, hash]);
+      console.log('Demo driver PIN seeded for store review.');
+    }
     console.log('Demo review accounts seeded.');
   } catch (err) {
     console.error('DEMO SEED FAILED — store review will be rejected:', err.message);
@@ -503,6 +520,27 @@ async function runMigrations(client) {
            would be handing it to the same people. Until the login verifies
            something, these three are written by an administrator only.
            Flagged to Jeffery in writing. */
+        /* 🚨🚨 28 Sep — REAL DRIVER AUTHENTICATION. Until now the login took a
+           phone number and nothing else; the PIN the app collected was never
+           checked against anything because this column did not exist.
+           ⛔ NOBODY IS LOCKED OUT: pin_hash starts NULL for every existing
+           driver, and a NULL hash means "sign in with your phone as before and
+           set your PIN now". The fleet migrates itself one man at a time, at
+           the moment he next opens the app. See services/driverAuth.js. */
+        /* 🚨 28 Sep, Jeffery: "Do not allow +509 0000 0000 to receive or accept
+           real customer rides. We still need Apple review capability."
+           Apple rejected 1.0(7) because a reviewer could not sign in, so this
+           account is a RELEASE REQUIREMENT and cannot simply be disabled. It is
+           marked instead: it keeps its login and its demo history, and dispatch
+           refuses to put a real passenger anywhere near it. */
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS is_test_account BOOLEAN NOT NULL DEFAULT false;
+        UPDATE drivers SET is_test_account = true WHERE phone = '+50900000000';
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS pin_hash VARCHAR(200);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS pin_set_at TIMESTAMP WITH TIME ZONE;
+        /* A 4-digit PIN is 10,000 guesses. The HASH is not what protects it —
+           this pair is. Five wrong tries and the account stops answering. */
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS pin_attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS pin_locked_until TIMESTAMP WITH TIME ZONE;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS payout_method VARCHAR(20) NOT NULL DEFAULT 'moncash';
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_name VARCHAR(120);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS bank_account_name VARCHAR(160);

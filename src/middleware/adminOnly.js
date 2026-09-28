@@ -60,6 +60,7 @@ const ADMIN_ONLY = [
      of the system, which is the credential he actually has. */
   ['GET', /^\/api\/rides\/reports\/money\/?$/],
   ['GET', /^\/api\/rides\/reports\/attention\/?$/],
+  ['POST', /^\/api\/drivers\/[^\/]+\/pin\/reset\/?$/],
   ['GET', /^\/api\/rides\/earnings\/owed\/?$/],
   ['POST', /^\/api\/rides\/earnings\/backfill\/?$/],
 

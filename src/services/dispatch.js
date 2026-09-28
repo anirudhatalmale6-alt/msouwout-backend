@@ -48,11 +48,17 @@ async function coverage(lat, lng, rideType) {
   }
   const q = await pool.query(
     `SELECT
-        COUNT(*) FILTER (WHERE status='approved' AND is_verified AND is_active)::int AS approved,
+        /* ⛔ NOT is_test_account. A demo account is not a car that can come
+           and get her, and counting it would make the "no driver nearby"
+           warning lie in exactly the way it was built to stop. */
         COUNT(*) FILTER (WHERE status='approved' AND is_verified AND is_active
+                           AND NOT COALESCE(is_test_account, false))::int AS approved,
+        COUNT(*) FILTER (WHERE status='approved' AND is_verified AND is_active
+                           AND NOT COALESCE(is_test_account, false)
                            AND current_lat IS NOT NULL AND current_lng IS NOT NULL
                            AND last_location_update > NOW() - make_interval(mins => $3))::int AS locatable,
         MIN(CASE WHEN status='approved' AND is_verified AND is_active
+                  AND NOT COALESCE(is_test_account, false)
                   AND current_lat IS NOT NULL AND current_lng IS NOT NULL
                   AND last_location_update > NOW() - make_interval(mins => $3)
             THEN 6371 * 2 * asin(sqrt(

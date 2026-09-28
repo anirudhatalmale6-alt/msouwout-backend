@@ -565,6 +565,20 @@ router.get('/available', async (req, res) => {
     const askedMinutes = parseInt(req.query.minutes, 10);
     const params = [];
     let where = `WHERE r.status = 'searching'`;
+
+    /* ⛔ A demo account never SEES a real passenger either. Accepting is already
+       refused, but this board carries her name, her telephone number and the
+       street she is standing on - so the reviewer's account is shown an empty
+       board rather than a list of real people. He still signs in, still has his
+       completed demo history, and the app still reviews. */
+    if (req.query.driver_id && /^[0-9a-f-]{36}$/i.test(String(req.query.driver_id))) {
+      const who = await pool.query('SELECT is_test_account FROM drivers WHERE id = $1',
+                                   [req.query.driver_id]);
+      if (who.rows.length && who.rows[0].is_test_account) {
+        return res.json({ rides: [], test_account: true,
+          message: 'Kont demo — pa gen kous reyèl.' });
+      }
+    }
     if (Number.isFinite(askedMinutes) && askedMinutes > 0 && askedMinutes < 60) {
       where += ` AND r.created_at > NOW() - INTERVAL '${Math.floor(askedMinutes)} minutes'`;
     }
@@ -744,6 +758,20 @@ router.patch('/:id/accept', async (req, res) => {
 
     const driver = await pool.query('SELECT * FROM drivers WHERE id = $1 AND status = $2', [driver_id, 'approved']);
     if (driver.rows.length === 0) return res.status(404).json({ error: 'Chofè pa jwenn oswa pa apwouve' });
+
+    /* 🚨 28 Sep, Jeffery: "Do not allow +509 0000 0000 to receive or accept real
+       customer rides." The account exists because Apple rejected 1.0(7) when a
+       reviewer could not sign in, so it cannot simply be switched off - but a
+       real passenger must never be handed to it. Refused HERE, at the moment of
+       accepting, rather than only hidden from the board: hiding is a display
+       decision and this is a rule. */
+    if (driver.rows[0].is_test_account) {
+      console.warn('[DISPATCH] refused: test account ' + driver.rows[0].phone +
+                   ' tried to accept real ride ' + ride.rows[0].tracking_code);
+      return res.status(403).json({
+        error: 'Kont demo a pa ka pran yon kous reyèl.',
+        code: 'test_account' });
+    }
 
     // With ten drivers watching the same board, two can tap Accept in the same
     // second — and the SELECT above would say "searching" to both. The status is

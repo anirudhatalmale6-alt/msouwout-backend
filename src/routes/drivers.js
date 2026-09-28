@@ -1,4 +1,5 @@
 const express = require('express');
+const driverAuth = require('../services/driverAuth');
 const pool = require('../db/pool');
 const router = express.Router();
 
@@ -432,7 +433,7 @@ router.patch('/:id/reject', async (req, res) => {
 // POST /api/drivers/login - Phone-based driver login (public)
 router.post('/login', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone, pin } = req.body;
     if (!phone) {
       return res.status(400).json({ error: 'Phone number is required' });
     }
@@ -441,7 +442,8 @@ router.post('/login', async (req, res) => {
     const result = await pool.query(`
       SELECT id, full_name, phone, email, vehicle_type, license_plate,
              preferred_service, status, is_verified, is_active,
-             created_at, reviewed_at, rejection_reason
+             created_at, reviewed_at, rejection_reason,
+             pin_hash, pin_attempts, pin_locked_until
       FROM drivers WHERE phone = $1 OR phone = $2
     `, [clean, phone.trim()]);
 
@@ -450,6 +452,31 @@ router.post('/login', async (req, res) => {
     }
 
     const driver = result.rows[0];
+
+    /* 🚨🚨 THE DOOR NOW HAS A LOCK. This route used to take a phone number and
+       nothing else, so anyone who knew a driver's number could read the name,
+       telephone and address of every passenger he had carried.
+       ⛔ A driver with no PIN yet is NOT refused - he is let in and told to set
+       one, which is what stops this change locking out a fleet where not one
+       man has a PIN. See services/driverAuth.js. */
+    const gate = await driverAuth.checkSignIn(driver, pin);
+    if (gate.outcome === 'locked') {
+      return res.status(429).json({ error: 'twòp esè', code: 'pin_locked',
+        minutes: gate.minutes });
+    }
+    if (gate.outcome === 'pin_required') {
+      return res.status(401).json({ error: 'PIN obligatwa', code: 'pin_required' });
+    }
+    if (gate.outcome === 'pin_wrong') {
+      return res.status(401).json({ error: 'PIN pa kòrèk', code: 'pin_wrong',
+        remaining: gate.remaining });
+    }
+    const mustEnroll = gate.outcome === 'enroll';
+
+    /* ⛔ Never send the hash to a browser. */
+    delete driver.pin_hash;
+    delete driver.pin_attempts;
+    delete driver.pin_locked_until;
 
     // The dashboard builds the active-ride card straight from this list, so it has
     // to carry what a driver actually needs: where he is going and who he is
@@ -469,7 +496,10 @@ router.post('/login', async (req, res) => {
       ORDER BY created_at DESC LIMIT 20
     `, [driver.id]);
 
-    res.json({ driver, rides: rides.rows });
+    res.json({ driver, rides: rides.rows,
+      /* The app shows "choose your PIN" on this flag. It is the whole
+         migration: every driver enrolls the next time he signs in. */
+      enrollment_required: mustEnroll });
   } catch (err) {
     console.error('Driver login error:', err);
     res.status(500).json({ error: 'Login failed' });
@@ -853,6 +883,51 @@ router.post('/push/unsubscribe', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: 'Could not remove the alert' });
+  }
+});
+
+/* ── PIN ──────────────────────────────────────────────────────────────────
+   Enrolling is open, exactly like login, and SAFE because the service refuses
+   when a PIN already exists - otherwise "set your PIN" would be a way to
+   overwrite somebody else's knowing only his number, which is the hole being
+   closed. Changing one requires the current PIN. Clearing a forgotten one is
+   an administrator's job (listed in middleware/adminOnly.js). */
+
+// POST /api/drivers/:id/pin — first PIN, for a driver who has none.
+router.post('/:id/pin', async (req, res) => {
+  try {
+    const out = await driverAuth.enroll(req.params.id, (req.body || {}).pin);
+    if (out.error) return res.status(out.code || 400).json(out);
+    res.json(out);
+  } catch (err) {
+    console.error('PIN enroll error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+// PUT /api/drivers/:id/pin — change it, with the current one.
+router.put('/:id/pin', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const out = await driverAuth.change(req.params.id, b.current_pin, b.pin);
+    if (out.error) return res.status(out.code || 400).json(out);
+    res.json(out);
+  } catch (err) {
+    console.error('PIN change error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+// POST /api/drivers/:id/pin/reset — ADMIN. He forgot it; clear it so he
+// enrolls again on his next sign-in. ⛔ Never sets one on his behalf.
+router.post('/:id/pin/reset', async (req, res) => {
+  try {
+    const out = await driverAuth.adminReset(req.params.id);
+    if (out.error) return res.status(out.code || 400).json(out);
+    res.json(out);
+  } catch (err) {
+    console.error('PIN reset error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
   }
 });
 
