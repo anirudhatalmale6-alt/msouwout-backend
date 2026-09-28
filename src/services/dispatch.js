@@ -184,6 +184,14 @@ async function releaseAbandoned(limit = 100) {
   const q = await pool.query(
     `UPDATE ride_requests
         SET status = 'searching',
+            /* ⛔ KEEP HIM ON THE RECORD FIRST. driver_id has to go so the ride
+               can be offered again, but wiping it also wiped the only trace of
+               who took the ride and never came - so the very first ride this
+               ran on, MW-V64SWJB, lost its driver the moment it was released.
+               In a module that exists to preserve records, that was the worst
+               possible thing to throw away. */
+            last_driver_id = COALESCE(driver_id, last_driver_id),
+            released_at = NOW(),
             driver_id = NULL,
             accepted_at = NULL,
             keep_waiting_until = NOW() + make_interval(mins => $3),

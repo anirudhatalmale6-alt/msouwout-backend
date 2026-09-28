@@ -441,6 +441,14 @@ async function runMigrations(client) {
            again, and the expiry clock is pushed back. */
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS keep_waiting_until TIMESTAMP WITH TIME ZONE;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS no_driver_warned BOOLEAN NOT NULL DEFAULT false;
+        /* 🚨 WHO ABANDONED IT. Releasing a ride sets driver_id back to NULL so
+           it can be offered again - which quietly destroyed the one fact that
+           matters afterwards: which driver took it and never came. The first
+           ride this ran on, MW-V64SWJB, lost its driver the moment it was
+           released, in a module whose entire purpose is keeping the record.
+           Nobody can answer "which driver keeps doing this" without it. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS last_driver_id UUID;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS released_at TIMESTAMP WITH TIME ZONE;
         /* Where to reach a driver's phone when the page is CLOSED. One row per
            browser, not per driver: a man with a phone and a tablet gets told
            on both. endpoint is UNIQUE because that is what the browser
