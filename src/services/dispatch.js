@@ -96,12 +96,19 @@ function waitState(ride, now = new Date()) {
   const stillPromised = kept > now.getTime();
   const limit = stillPromised ? (kept - started) / 60000 : EXPIRE_AFTER_MIN;
 
-  if (mins >= limit) return { phase: 'expiring', waited_min: Math.round(mins) };
+  /* Her driver accepted and then never came, so we took the ride off him and
+     put it back out. She has to be TOLD that - going quietly back to a
+     spinner, after she had a driver, is the silence this whole module exists
+     to stop. Carried on every phase, because it is true whatever the clock
+     says. */
+  const dropped = Number(ride.reassigned_count) > 0 ? { driver_dropped: true } : {};
+
+  if (mins >= limit) return Object.assign({ phase: 'expiring', waited_min: Math.round(mins) }, dropped);
   if (mins >= NUDGE_AFTER_MIN && !stillPromised) {
-    return { phase: 'slow', waited_min: Math.round(mins),
-             nudge_after_min: NUDGE_AFTER_MIN };
+    return Object.assign({ phase: 'slow', waited_min: Math.round(mins),
+                           nudge_after_min: NUDGE_AFTER_MIN }, dropped);
   }
-  return { phase: 'searching', waited_min: Math.round(mins) };
+  return Object.assign({ phase: 'searching', waited_min: Math.round(mins) }, dropped);
 }
 
 /* Close the ones nobody can serve. Idempotent: it only ever moves a row that
@@ -158,7 +165,19 @@ async function paidAndStranded() {
    It goes BACK to searching rather than being closed: the passenger may still
    want it, and another driver may still take it. Her payment is untouched
    either way - a PAID ride is never released, because money on a ride makes it
-   a human decision. */
+   a human decision.
+
+   🚨 CAUGHT ON PRODUCTION, NOT BY THE TESTS. The first version of this set the
+   ride to 'searching' and then the very next line of the sweeper - expireStale
+   - closed it again in the same tick, because expiry is judged on created_at
+   and the ride was already older than the expiry window. Released and killed
+   inside one second. My tests called releaseAbandoned() on its own, so they
+   never saw the two run together; the live sweeper does.
+
+   So a released ride gets a REAL second chance: keep_waiting_until is pushed
+   out, which is the same mechanism the passenger's own "keep waiting" button
+   uses, and expireStale already honours it. If nobody takes it in that window
+   it expires properly, with a reason, exactly like any other. */
 const RELEASE_ACCEPTED_AFTER_MIN = 45;
 
 async function releaseAbandoned(limit = 100) {
@@ -167,6 +186,7 @@ async function releaseAbandoned(limit = 100) {
         SET status = 'searching',
             driver_id = NULL,
             accepted_at = NULL,
+            keep_waiting_until = NOW() + make_interval(mins => $3),
             reassigned_count = COALESCE(reassigned_count, 0) + 1,
             updated_at = NOW()
       WHERE id IN (
@@ -178,7 +198,7 @@ async function releaseAbandoned(limit = 100) {
          ORDER BY created_at
          LIMIT $2)
       RETURNING tracking_code`,
-    [RELEASE_ACCEPTED_AFTER_MIN, limit]);
+    [RELEASE_ACCEPTED_AFTER_MIN, limit, KEEP_WAITING_MIN]);
   if (q.rows.length) {
     console.warn('[DISPATCH] released ' + q.rows.length +
       ' ride(s) a driver took and never started: ' +
