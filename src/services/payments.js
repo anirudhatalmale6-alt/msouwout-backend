@@ -30,6 +30,10 @@ const CLIENT_ID = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
 /* The gateway refuses anything under 20 HTG. Worth knowing as a real number:
    it is what makes a genuine end-to-end test cost about 20 gourdes a run
    instead of the price of a ride. */
+/* How long a gateway payment link is still worth handing back. Short
+   enough that it cannot be expired, long enough to absorb a double tap
+   and a slow connection. */
+const REUSE_WINDOW_MIN = 10;
 const MIN_HTG = 20;
 
 /* How long to keep asking about a payment nobody finished. Roughly 30 minutes
@@ -258,17 +262,28 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
    * real chance of paying twice. If there is already a live attempt for the
    * same subject at the same amount and method, hand back that one.
    *
-   * Deliberately NOT keyed on time: a payment page opened four minutes ago is
-   * still the page the passenger is looking at. It is keyed on the attempt
-   * still being pending, which is exactly what "not finished yet" means. */
+   * 🚨 28 Sep - THIS IS WHY "SHE IS NOT ABLE TO PAY".
+   * I wrote here that this was "deliberately NOT keyed on time: a payment page
+   * opened four minutes ago is still the page the passenger is looking at."
+   * That reasoning is right for four minutes and WRONG for four hours. A
+   * MonCash token EXPIRES. The row stays 'pending' for ever - nobody finished
+   * it, so nothing ever moves it - so every later tap handed the passenger the
+   * SAME long-dead gateway link and a page that would not take her money.
+   * Jennifer's ride had a pending attempt on it from the day before.
+   *
+   * So the window is bounded. Inside it, reuse still does its real job of
+   * stopping a double tap becoming two transactions. Outside it, she gets a
+   * fresh token, because an expired link is not "the page she is looking at" -
+   * it is a dead end that looks exactly like a broken product. */
   if (subject_id) {
     const live = await pool.query(
       `SELECT * FROM payments
         WHERE subject_type = $1 AND subject_id = $2
           AND status = 'pending' AND amount = $3 AND method = $4
           AND payment_url IS NOT NULL
+          AND created_at > NOW() - make_interval(mins => $5)
         ORDER BY created_at DESC LIMIT 1`,
-      [subject_type || 'ride', String(subject_id), amt, method]);
+      [subject_type || 'ride', String(subject_id), amt, method, REUSE_WINDOW_MIN]);
     if (live.rows.length) {
       return { ok: true, payment: live.rows[0], reused: true };
     }

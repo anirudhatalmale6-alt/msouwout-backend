@@ -146,11 +146,53 @@ async function paidAndStranded() {
   return q.rows;
 }
 
+/* 🚨 28 Sep. "The ride was accepted without my approval and why is the driver
+   dashboard like this?" - he was looking at a ride HIS OWN driver account had
+   accepted NINETEEN HOURS earlier and never finished. It had sat on his
+   dashboard ever since, looking like something that had just happened.
+
+   Same fault as Wilkendy, one state further along: 'searching' could rot for
+   ever and now cannot, but 'accepted' still could. An unpaid ride a driver
+   took and never started is a ride nobody is coming for.
+
+   It goes BACK to searching rather than being closed: the passenger may still
+   want it, and another driver may still take it. Her payment is untouched
+   either way - a PAID ride is never released, because money on a ride makes it
+   a human decision. */
+const RELEASE_ACCEPTED_AFTER_MIN = 45;
+
+async function releaseAbandoned(limit = 100) {
+  const q = await pool.query(
+    `UPDATE ride_requests
+        SET status = 'searching',
+            driver_id = NULL,
+            accepted_at = NULL,
+            reassigned_count = COALESCE(reassigned_count, 0) + 1,
+            updated_at = NOW()
+      WHERE id IN (
+        SELECT id FROM ride_requests
+         WHERE status = 'accepted'
+           AND COALESCE(payment_status, 'unpaid') <> 'paid'
+           AND started_at IS NULL
+           AND COALESCE(accepted_at, created_at) < NOW() - make_interval(mins => $1)
+         ORDER BY created_at
+         LIMIT $2)
+      RETURNING tracking_code`,
+    [RELEASE_ACCEPTED_AFTER_MIN, limit]);
+  if (q.rows.length) {
+    console.warn('[DISPATCH] released ' + q.rows.length +
+      ' ride(s) a driver took and never started: ' +
+      q.rows.map(r => r.tracking_code).join(', '));
+  }
+  return q.rows;
+}
+
 let timer = null;
 function startSweeper(everyMs = 5 * 60 * 1000) {
   if (timer) return;
-  const tick = () => expireStale().catch(e =>
-    console.error('[DISPATCH] sweep failed (rides unaffected):', e.message));
+  const tick = () => releaseAbandoned()
+    .then(() => expireStale())
+    .catch(e => console.error('[DISPATCH] sweep failed (rides unaffected):', e.message));
   timer = setInterval(tick, everyMs);
   if (timer.unref) timer.unref();
   tick();
@@ -159,5 +201,7 @@ function stopSweeper() { if (timer) { clearInterval(timer); timer = null; } }
 
 module.exports = {
   COVERAGE_KM, POSITION_FRESH_MIN, NUDGE_AFTER_MIN, EXPIRE_AFTER_MIN, KEEP_WAITING_MIN,
-  coverage, waitState, expireStale, paidAndStranded, startSweeper, stopSweeper
+  RELEASE_ACCEPTED_AFTER_MIN,
+  coverage, waitState, expireStale, releaseAbandoned, paidAndStranded,
+  startSweeper, stopSweeper
 };
