@@ -638,12 +638,14 @@ router.get('/driver/:driverId/active', async (req, res) => {
       `SELECT r.*, d.full_name as driver_name, d.phone as driver_phone, d.license_plate
        FROM ride_requests r LEFT JOIN drivers d ON r.driver_id = d.id
        /* 🚨 22 Sep: MW-KRPWCO9 was accepted, arrived and STARTED, then a safety
-          alert flipped its status to 'monitoring' (routes/safety.js). This
+          alert flipped its status to 'monitoring' (routes/safety.js). That
+          overwrite is GONE - safety has its own column - so the two real
+          in-flight states are the only ones needed here. This
           query did not list that status, so the endpoint returned {ride:null}
           and the ride became invisible to its own driver - it could not be
           completed and could not be paid. A safety alert must never take the
           ride off the driver's screen; that is when he needs it most. */
-       WHERE r.driver_id = $1 AND r.status IN ('accepted','in_progress','monitoring','emergency')
+       WHERE r.driver_id = $1 AND r.status IN ('accepted','in_progress')
        ORDER BY r.updated_at DESC LIMIT 1`,
       [req.params.driverId]
     );
@@ -1355,6 +1357,8 @@ router.get('/:id/track', async (req, res) => {
          another one" instead of silently dropping back to a searching screen
          that looks like the ride was never accepted. */
       reassigned_count: ride.reassigned_count || 0,
+      /* A flag ABOUT the ride, beside it - never instead of its status. */
+      safety_state: ride.safety_state || null,
       distance_km: ride.distance_km,
       duration_min: ride.duration_min,
       ride_type: ride.ride_type,

@@ -115,8 +115,13 @@ router.post('/sos', async (req, res) => {
 
     if (alertLevel === 'silent' || alertLevel === 'escalated') {
       if (ride_id) {
+        /* ⛔ status is NOT touched. It used to be, and that is what stranded a
+           paid ride mid-trip - see the note in db/init.js. The alert is
+           recorded beside the ride; where the ride actually is stays where it
+           actually is. */
         await pool.query(
-          `UPDATE ride_requests SET status = $1, updated_at = NOW() WHERE id = $2`,
+          `UPDATE ride_requests SET safety_state = $1, safety_at = NOW(), updated_at = NOW()
+            WHERE id = $2`,
           [alertLevel === 'escalated' ? 'emergency' : 'monitoring', ride_id]
         );
       }
@@ -176,13 +181,13 @@ router.post('/safe', async (req, res) => {
     await pool.query(query + ' AND status IN (\'active\', \'monitoring\')', params);
 
     if (ride_id) {
-      const ride = await pool.query('SELECT status FROM ride_requests WHERE id = $1', [ride_id]);
-      if (ride.rows.length > 0 && ['emergency', 'monitoring'].includes(ride.rows[0].status)) {
-        await pool.query(
-          `UPDATE ride_requests SET status = 'in_progress', updated_at = NOW() WHERE id = $1`,
-          [ride_id]
-        );
-      }
+      /* Clearing an alert clears the ALERT. It no longer writes a ride state,
+         because it never knew one: the old version set 'in_progress' on the way
+         out, which promoted a ride that had only been ACCEPTED and skipped the
+         passenger's PIN entirely. */
+      await pool.query(
+        `UPDATE ride_requests SET safety_state = NULL, safety_at = NOW(), updated_at = NOW()
+          WHERE id = $1 AND safety_state IS NOT NULL`, [ride_id]);
 
       await pool.query(
         `INSERT INTO safety_events (ride_id, event_type, data) VALUES ($1, 'safe_confirmed', $2)`,

@@ -447,6 +447,29 @@ async function runMigrations(client) {
            ride this ran on, MW-V64SWJB, lost its driver the moment it was
            released, in a module whose entire purpose is keeping the record.
            Nobody can answer "which driver keeps doing this" without it. */
+        /* 🚨🚨 28 Sep, THE LIVE MONCASH TEST. A safety alert used to write
+           'emergency' / 'monitoring' straight into ride_requests.status - the
+           SAME column that says whether the ride is searching, accepted, under
+           way or finished. The moment safety fired, the ride's real state was
+           destroyed, and /complete only accepts 'in_progress', so MW-8EF6GP6
+           could never be finished: no receipt, no earnings, and the alarm
+           re-appeared on every refresh for BOTH of them.
+
+           Safety is a flag ABOUT a ride, not a kind of ride. It gets its own
+           column, status is never touched, and an alert can no longer strand a
+           paid trip. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS safety_state VARCHAR(20);
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS safety_at TIMESTAMP WITH TIME ZONE;
+        /* Rides already stranded by the old behaviour. started_at is the only
+           honest evidence of where they really were: a ride with a start time
+           was under way, one without had merely been accepted. ⛔ Guessing
+           'in_progress' for both - which the old "I am safe" route did - would
+           silently skip the PIN on a ride that never started. */
+        UPDATE ride_requests
+           SET safety_state = status,
+               safety_at    = COALESCE(safety_at, updated_at, NOW()),
+               status       = CASE WHEN started_at IS NOT NULL THEN 'in_progress' ELSE 'accepted' END
+         WHERE status IN ('emergency', 'monitoring');
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS last_driver_id UUID;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS released_at TIMESTAMP WITH TIME ZONE;
         /* Where to reach a driver's phone when the page is CLOSED. One row per

@@ -255,7 +255,7 @@ async function stuckInProgress() {
             EXTRACT(EPOCH FROM (NOW() - r.started_at))/60 AS running_min
        FROM ride_requests r
        LEFT JOIN drivers d ON d.id = r.driver_id
-      WHERE r.status IN ('in_progress', 'monitoring', 'emergency')
+      WHERE r.status = 'in_progress'   /* safety lives in safety_state now, not here */
         AND r.started_at < NOW() - make_interval(mins => $1)
       ORDER BY r.started_at`,
     [STUCK_IN_PROGRESS_MIN]);
