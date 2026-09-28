@@ -59,6 +59,7 @@ const ADMIN_ONLY = [
      Listing it here means it accepts the stored admin password like the rest
      of the system, which is the credential he actually has. */
   ['GET', /^\/api\/rides\/reports\/money\/?$/],
+  ['GET', /^\/api\/rides\/reports\/attention\/?$/],
   ['GET', /^\/api\/rides\/earnings\/owed\/?$/],
   ['POST', /^\/api\/rides\/earnings\/backfill\/?$/],
 

@@ -428,6 +428,24 @@ router.post('/history', async (req, res) => {
   }
 });
 
+/* GET /api/rides/reports/attention — the rides a PERSON has to settle (admin).
+ *
+ * Two kinds, and neither may be decided by a timer:
+ *   - she paid and no driver ever came (needs a refund decision)
+ *   - a driver started a ride and never finished it (needs the truth about
+ *     whether it happened, and it is silently keeping him from taking work)
+ *
+ * 🚨 The first list already existed and was called from nowhere at all. A
+ * report nobody reads is not a report. */
+router.get('/reports/attention', async (req, res) => {
+  try {
+    res.json(await dispatch.needsAttention());
+  } catch (err) {
+    console.error('Attention report error:', err);
+    res.status(500).json({ error: 'Failed to build the report' });
+  }
+});
+
 // GET /api/rides/reports/money — Money split & settlement report (admin)
 // Every completed ride contributes three lines: driver payout, DASH fund, MsouWout revenue.
 // Defaults to the last 24 hours (the payout/settlement window) plus a 7-day daily series.

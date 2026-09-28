@@ -130,6 +130,16 @@ tbody tr{border-top:1px solid var(--line)}
       </div>
     </div>
 
+    <!-- 🚨 The rides a PERSON has to settle. At the top because it is the only
+         thing on this page that is waiting on somebody; the rest is history.
+         Hidden entirely when there is nothing, so it never becomes wallpaper
+         that gets scrolled past. -->
+    <div id="attention" class="hidden" style="border:2px solid #FCA5A5;background:#FEF2F2;border-radius:14px;padding:14px 16px;margin-bottom:16px">
+      <h2 style="margin:0 0 4px;font-size:1rem;color:#B91C1C">Needs a person</h2>
+      <div style="font-size:.78rem;color:#7F1D1D;margin-bottom:10px">Nothing here is decided automatically — money is involved.</div>
+      <div id="attentionBody"></div>
+    </div>
+
     <div class="grid">
       <div class="kpi driver"><div class="label">Driver payouts</div><div class="val" id="kDriver">—</div><div class="note">Due to drivers within 24h</div></div>
       <div class="kpi dash"><div class="label">DASH fund</div><div class="val" id="kDash">—</div><div class="note">Medical protection pool</div></div>
@@ -185,6 +195,7 @@ function load(){
     document.getElementById('dash').classList.remove('hidden');
     document.getElementById('gateErr').textContent='';
     document.getElementById('dashErr').textContent='';
+    loadAttention();
     var s=d.summary;
     document.getElementById('kDriver').innerHTML=fmt(s.driver_payouts)+' <small>HTG</small>';
     document.getElementById('kDash').innerHTML=fmt(s.dash_fund)+' <small>HTG</small>';
@@ -231,6 +242,36 @@ function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){
 function say(id,text,good){
   var el=document.getElementById(id); if(!el) return;
   el.className='msg '+(good?'good':'bad'); el.textContent=text;
+}
+
+/* Two kinds of ride nobody can decide with a timer: she paid and no driver
+   ever came, and a driver started a ride and never finished it. The second one
+   is also silently keeping that driver from taking any more work. */
+function loadAttention(){
+  var s=localStorage.getItem(KEY);
+  var box=document.getElementById('attention'), body=document.getElementById('attentionBody');
+  fetch('/api/rides/reports/attention',{headers:{'x-admin-secret':s}})
+    .then(function(r){ return r.ok?r.json():null; })
+    .then(function(d){
+      if(!d||!d.total){ box.classList.add('hidden'); return; }
+      var h='';
+      (d.paid_but_no_driver||[]).forEach(function(x){
+        h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
+           '<b>'+esc(x.tracking_code)+'</b> — paid '+fmt(x.total_with_protection)+' HTG, '+
+           'no driver after '+Math.round(x.waited_min)+' min<br>'+
+           '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.customer_phone||'')+
+           ' — needs a refund decision</span></div>';
+      });
+      (d.started_but_never_finished||[]).forEach(function(x){
+        h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
+           '<b>'+esc(x.tracking_code)+'</b> — running '+Math.round(x.running_min/60)+' h<br>'+
+           '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.driver_name||'driver')+
+           ' '+esc(x.driver_phone||'')+' — he cannot take another ride until this is closed</span></div>';
+      });
+      body.innerHTML=h;
+      box.classList.remove('hidden');
+    })
+    .catch(function(){ box.classList.add('hidden'); });
 }
 
 function loadPayouts(){

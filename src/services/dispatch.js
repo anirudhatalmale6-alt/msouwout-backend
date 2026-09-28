@@ -215,11 +215,71 @@ async function releaseAbandoned(limit = 100) {
   return q.rows;
 }
 
+/* A ride the driver STARTED and never finished.
+ *
+ * 28 Sep, sweeping the rest of the workflow for the same fault as Wilkendy's:
+ * a row that enters a state with nothing to take it out again. 'searching'
+ * could rot for ever, and now cannot. 'accepted' could, and now cannot.
+ * 'in_progress' still can - it leaves only when the driver presses Finish or
+ * somebody cancels.
+ *
+ * ⛔ NO TIMER TOUCHES THIS ONE. Completing a ride pays a driver and charges a
+ * passenger; cancelling one takes a fare away from a man who may genuinely
+ * have driven it. Neither is a decision a background job gets to make at three
+ * in the morning on a guess about how long a trip should take.
+ *
+ * But it cannot stay invisible either, because a ride stuck here also makes
+ * its driver permanently BUSY - one forgotten trip and he can never accept
+ * another. So it is reported, loudly, for a person to settle.
+ */
+const STUCK_IN_PROGRESS_MIN = 240;      // four hours; the longest plausible trip in Haiti
+
+async function stuckInProgress() {
+  const q = await pool.query(
+    `SELECT r.tracking_code, r.customer_phone, r.price, r.payment_status,
+            r.started_at, d.full_name AS driver_name, d.phone AS driver_phone,
+            EXTRACT(EPOCH FROM (NOW() - r.started_at))/60 AS running_min
+       FROM ride_requests r
+       LEFT JOIN drivers d ON d.id = r.driver_id
+      WHERE r.status IN ('in_progress', 'monitoring', 'emergency')
+        AND r.started_at < NOW() - make_interval(mins => $1)
+      ORDER BY r.started_at`,
+    [STUCK_IN_PROGRESS_MIN]);
+  return q.rows;
+}
+
+/* Everything a person needs to look at, in one answer.
+ *
+ * 🚨 paidAndStranded() existed, was tested, and was called from NOWHERE. I
+ * wrote a long comment in coverage() about a guard that cannot fire, and then
+ * built a report nobody reads. Reporting it to a function nobody calls is the
+ * same as not reporting it. */
+async function needsAttention() {
+  const [stranded, stuck] = await Promise.all([paidAndStranded(), stuckInProgress()]);
+  return {
+    paid_but_no_driver: stranded,
+    started_but_never_finished: stuck,
+    total: stranded.length + stuck.length
+  };
+}
+
 let timer = null;
 function startSweeper(everyMs = 5 * 60 * 1000) {
   if (timer) return;
   const tick = () => releaseAbandoned()
     .then(() => expireStale())
+    /* Say it in the log too. The report route needs somebody to go and look;
+       this needs nobody. */
+    .then(() => needsAttention())
+    .then(a => {
+      if (a.total) {
+        console.warn('[DISPATCH] ' + a.total + ' ride(s) need a PERSON: ' +
+          a.paid_but_no_driver.map(r => r.tracking_code + ' paid, no driver').join(', ') +
+          (a.paid_but_no_driver.length && a.started_but_never_finished.length ? '; ' : '') +
+          a.started_but_never_finished.map(r =>
+            r.tracking_code + ' running ' + Math.round(r.running_min / 60) + 'h').join(', '));
+      }
+    })
     .catch(e => console.error('[DISPATCH] sweep failed (rides unaffected):', e.message));
   timer = setInterval(tick, everyMs);
   if (timer.unref) timer.unref();
@@ -230,6 +290,8 @@ function stopSweeper() { if (timer) { clearInterval(timer); timer = null; } }
 module.exports = {
   COVERAGE_KM, POSITION_FRESH_MIN, NUDGE_AFTER_MIN, EXPIRE_AFTER_MIN, KEEP_WAITING_MIN,
   RELEASE_ACCEPTED_AFTER_MIN,
+  STUCK_IN_PROGRESS_MIN,
   coverage, waitState, expireStale, releaseAbandoned, paidAndStranded,
+  stuckInProgress, needsAttention,
   startSweeper, stopSweeper
 };
