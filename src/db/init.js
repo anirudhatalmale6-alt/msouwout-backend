@@ -482,7 +482,19 @@ async function runMigrations(client) {
          that is exactly one, MW-4RQDSL0. Only touches rows that are cancelled,
          actually paid, and carry no refund record yet, so re-running it can
          never disturb a refund somebody has already settled. */
-      const backfill = await client.query(`
+      /* 🚨 28 Sep: this ran BEFORE the ALTER that adds payment_status (further
+         down this same function), so on a FRESH database it threw
+         `column "payment_status" does not exist` and took the whole init with
+         it - the API never became ready. Invisible on Jeffery's database,
+         where an earlier deploy had already added the column, and therefore
+         invisible until I built the schema from nothing on a local Postgres.
+         ⇒ A migration that reads a column must not assume the migration that
+         CREATES it has already run. Guarded rather than reordered: the order
+         of everything else here is load-bearing. */
+      const hasPayCol = await client.query(`
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'ride_requests' AND column_name = 'payment_status'`);
+      const backfill = hasPayCol.rows.length ? await client.query(`
         UPDATE ride_requests
            SET refund_due = GREATEST(0, ROUND(
                  (CASE WHEN total_with_protection > 0 THEN total_with_protection
@@ -492,7 +504,7 @@ async function runMigrations(client) {
            AND LOWER(COALESCE(payment_status, '')) = 'paid'
            AND COALESCE(refund_due, 0) = 0
            AND refund_status IS NULL
-        RETURNING tracking_code, refund_due`);
+        RETURNING tracking_code, refund_due`) : { rows: [] };
       if (backfill.rows.length) {
         console.warn('[REFUND OWED] recorded on ' + backfill.rows.length +
           ' already-cancelled paid ride(s): ' +
