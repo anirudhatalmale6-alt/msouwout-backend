@@ -106,6 +106,10 @@ app.listen(PORT, () => {
          is what turns a payment finished on the gateway's own page into a ride
          marked paid — including when the passenger closed the app to do it. */
       require('./services/payments').startPoller();
+      /* Close rides nobody accepted, so 'searching' never means "forgotten".
+         Idempotent and bounded; a failure logs and the API carries on. */
+      require('./services/dispatch').startSweeper();
+      console.log('Dispatch sweeper started.');
       console.log('Payment poller started.');
       /* Record what is owed on rides that finished before the ledger existed.
          Bounded, idempotent - (ride_id, recipient_type) is unique, so a second

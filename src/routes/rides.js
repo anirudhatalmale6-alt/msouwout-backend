@@ -38,6 +38,8 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
 const pricing = require('../services/pricing');
 const earnings = require('../services/earnings');
+const dispatch = require('../services/dispatch');
+const alerts = require('../services/driverAlerts');
 
 // POST /api/rides/account/delete — user-initiated deletion of a rider's data
 // Required by App Store Guideline 5.1.1(v).
@@ -218,6 +220,17 @@ router.post('/request', async (req, res) => {
        the OS random source - it is the only thing standing between a
        forwarded family link and her name, her number and her PIN, so it must
        not come from Math.random(). Returned exactly once, at creation. */
+    /* 🚨 28 Sep: "Cash must NOT come back. MsouWout is cashless."
+       Wilkendy's ride was recorded as cash, because the default was cash and
+       nothing refused it. The server decides now - a request asking for cash
+       gets a digital method, it does not get a cash ride. */
+    const DIGITAL = ['moncash', 'natcash', 'all'];
+    const asked = String(payment_method || '').toLowerCase().trim();
+    const chosenMethod = DIGITAL.includes(asked) ? asked : 'moncash';
+    if (asked && !DIGITAL.includes(asked)) {
+      console.warn(`[RIDES] refused payment_method "${asked}" - MsouWout is cashless`);
+    }
+
     const ownerToken = require('crypto').randomBytes(16).toString('hex');
 
     /* ⛔ NO DUPLICATE BOOKINGS. The browser sends the same id for every retry
@@ -277,7 +290,7 @@ router.post('/request', async (req, res) => {
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
        commission.platform_fee, commission.driver_earning,
-       payment_method || 'cash', trackingCode, ridePin,
+       chosenMethod, trackingCode, ridePin,
        wantsMedical, medicalFee, dashFee, msouwoutMedicalFee, driverDashShare, totalWithProtection,
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
@@ -302,7 +315,7 @@ router.post('/request', async (req, res) => {
       price: finalPrice,
       platform_fee: commission.platform_fee,
       driver_earning: commission.driver_earning,
-      payment_method: payment_method || 'cash',
+      payment_method: chosenMethod,
       message: 'Ap chèche chofè...'
     };
 
@@ -319,6 +332,35 @@ router.post('/request', async (req, res) => {
       response.passenger = { name: passenger_name, phone: passenger_phone };
       response.share_link = `${req.protocol}://${req.get('host')}/api/rides/${trackingCode}/track`;
     }
+
+    /* 🚨 Tell her NOW if there is realistically nobody to come. The ride is
+       still created - she may want to wait anyway, and refusing outright would
+       lose a fare we could have served ten minutes later - but she is told the
+       truth instead of watching a spinner for five hours. */
+    try {
+      const cov = await dispatch.coverage(pickupLat, pickupLng, rideType);
+      response.coverage = cov;
+      if (!cov.covered) {
+        response.no_driver_nearby = true;
+        response.no_driver_message =
+          cov.reason === 'too_far'
+            ? `Chofè ki pi pre a a ${cov.nearest_km} km. Sa ka pran anpil tan. Ou ka tann, oswa ekri nou sou WhatsApp.`
+            : 'Nou pa wè okenn chofè toupre ou kounye a. Ou ka tann, oswa ekri nou sou WhatsApp.';
+        await pool.query('UPDATE ride_requests SET no_driver_warned = true WHERE id = $1', [rideId]);
+        console.warn(`[DISPATCH] ${trackingCode} booked with no driver in range (online=${cov.drivers_online}, nearest=${cov.nearest_km}km)`);
+      }
+    } catch (e) {
+      /* A coverage check that fails must never stop a booking. */
+      console.error('[DISPATCH] coverage check failed:', e.message);
+    }
+
+    /* ⛔ Not awaited. A slow push service must never make her booking slow,
+       and a broken one must never make it fail. The driver board is still the
+       system of record; this only means he does not have to be staring at it. */
+    alerts.alertNewRide({
+      id: rideId, tracking_code: trackingCode, price: finalPrice,
+      pickup_address: from.address, dropoff_address: to.address
+    }).catch(e => console.error('[ALERTS] could not notify drivers:', e.message));
 
     res.locals.sendOwnerToken = true;      // creating the ride: she must receive it
     res.status(201).json(response);
@@ -490,9 +532,24 @@ router.get('/available', async (req, res) => {
        off: the moto driver got car rides and nothing looked broken. Normalise
        instead of trusting the spelling. */
     const rideType = normVehicle(req.query.ride_type);
-    const minutes = Math.min(parseInt(req.query.minutes, 10) || 60, 720);
+    /* 🚨 28 Sep - THE OTHER HALF OF THE WILKENDY FAULT. This used to hide any
+       ride older than the window the app asked for (the driver app asks for
+       120 minutes), while leaving it 'searching' in the database for ever. His
+       booking became invisible to every driver at 19:54 and stayed open until
+       I closed it by hand.
+
+       The time filter is gone. 'searching' now genuinely means live, because
+       services/dispatch.js ENDS the ones nobody accepted instead of letting
+       them rot. A ride is either on the board or it is closed - never both,
+       never neither. `minutes` is still accepted so an older driver app does
+       not break, but it can only NARROW the board, never hide a live ride from
+       everybody. */
+    const askedMinutes = parseInt(req.query.minutes, 10);
     const params = [];
-    let where = `WHERE r.status = 'searching' AND r.created_at > NOW() - INTERVAL '${minutes} minutes'`;
+    let where = `WHERE r.status = 'searching'`;
+    if (Number.isFinite(askedMinutes) && askedMinutes > 0 && askedMinutes < 60) {
+      where += ` AND r.created_at > NOW() - INTERVAL '${Math.floor(askedMinutes)} minutes'`;
+    }
     if (rideType) {
       params.push(rideType);
       where += ` AND r.ride_type = $${params.length}`;
@@ -1102,6 +1159,31 @@ router.post('/:id/emergency', async (req, res) => {
    number". Different answers turn this into a way to ask which phone number
    booked a given ride.
    =========================================================================== */
+/* She has been told nobody has accepted yet and pressed "keep waiting".
+   ⛔ Deliberately NOT owner-gated: the alternative is a passenger who cannot
+   keep her own ride alive because the answer to her booking got lost. The
+   worst a stranger can do here is keep somebody's ride open longer. */
+router.post('/:id/keep-waiting', async (req, res) => {
+  try {
+    const param = req.params.id;
+    const isUUID = /^[0-9a-f]{8}-/.test(param);
+    const q = await pool.query(
+      `UPDATE ride_requests
+          SET keep_waiting_until = NOW() + make_interval(mins => $1), updated_at = NOW()
+        WHERE ${isUUID ? 'id = $2' : 'tracking_code = $2'} AND status = 'searching'
+        RETURNING tracking_code, keep_waiting_until`,
+      [dispatch.KEEP_WAITING_MIN, param]);
+    if (!q.rows.length) {
+      return res.status(409).json({ error: 'Kous sa a pa ap chèche chofè ankò.' });
+    }
+    res.json({ ok: true, keep_waiting_until: q.rows[0].keep_waiting_until,
+               minutes: dispatch.KEEP_WAITING_MIN });
+  } catch (err) {
+    console.error('keep-waiting error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.post('/:id/recover', async (req, res) => {
   try {
     const param = req.params.id;
@@ -1264,6 +1346,12 @@ router.get('/:id/track', async (req, res) => {
       trackResponse.passenger = { name: ride.passenger_name, phone: ride.passenger_phone };
       trackResponse.share_link = `${req.protocol}://${req.get('host')}/api/rides/${ride.tracking_code}/track`;
     }
+
+    /* How long she has been waiting, and whether we are still promising
+       anything. Read-only, so polling it costs nothing. */
+    Object.assign(trackResponse, dispatch.waitState(ride));
+    trackResponse.expired = ride.status === 'expired';
+    if (ride.status === 'expired') trackResponse.expire_reason = ride.expire_reason;
 
     /* Owner-only. Everything here is either personal data or a credential. */
     if (isOwner) {

@@ -429,6 +429,35 @@ async function runMigrations(client) {
            The browser makes one id per booking ATTEMPT and reuses it on every
            retry; UNIQUE is what makes that a promise rather than a hope. */
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS client_request_id VARCHAR(64);
+        /* 🚨 28 Sep - WILKENDY. A ride nobody accepted sat on 'searching' for
+           ever while the driver board only ever showed the last 2 hours, so
+           after 120 minutes it was invisible to every driver AND still open in
+           the database. He waited 5 hours and was never told anything.
+           'expired' is a real ending: the record is kept in full for reporting,
+           it simply stops pretending a car is coming. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS expired_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS expire_reason VARCHAR(40);
+        /* She pressed "keep waiting" - so the 10-minute nudge does not nag her
+           again, and the expiry clock is pushed back. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS keep_waiting_until TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS no_driver_warned BOOLEAN NOT NULL DEFAULT false;
+        /* Where to reach a driver's phone when the page is CLOSED. One row per
+           browser, not per driver: a man with a phone and a tablet gets told
+           on both. endpoint is UNIQUE because that is what the browser
+           regenerates when it changes - re-subscribing must update, not
+           accumulate. */
+        CREATE TABLE IF NOT EXISTS driver_push (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          driver_id UUID REFERENCES drivers(id) ON DELETE CASCADE,
+          endpoint TEXT NOT NULL UNIQUE,
+          subscription JSONB NOT NULL,
+          failures INTEGER NOT NULL DEFAULT 0,
+          last_ok TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_driver_push_driver ON driver_push (driver_id);
+        CREATE INDEX IF NOT EXISTS idx_rides_searching_age
+          ON ride_requests (status, created_at) WHERE status = 'searching';
         CREATE UNIQUE INDEX IF NOT EXISTS idx_rides_client_request
           ON ride_requests (client_request_id) WHERE client_request_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_rides_owner_token ON ride_requests (owner_token);

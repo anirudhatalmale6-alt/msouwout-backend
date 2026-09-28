@@ -816,4 +816,44 @@ router.get('/syndicate-drivers', async (req, res) => {
   }
 });
 
+/* ── NEW-RIDE ALERTS ───────────────────────────────────────────────────────
+   The driver's browser needs the public key, then hands back where to reach
+   it. Open, like the rest of the driver app: these carry no secret - the key
+   is public by design, and an endpoint is useless to anybody but the push
+   service that issued it. */
+const alerts = require('../services/driverAlerts');
+
+// GET /api/drivers/push/key
+router.get('/push/key', async (req, res) => {
+  try {
+    res.json({ key: await alerts.publicKey() });
+  } catch (err) {
+    console.error('push key error:', err);
+    res.status(503).json({ error: 'Alerts unavailable' });
+  }
+});
+
+// POST /api/drivers/push/subscribe  { driver_id, subscription }
+router.post('/push/subscribe', async (req, res) => {
+  try {
+    const { driver_id, subscription } = req.body || {};
+    const out = await alerts.subscribe(driver_id, subscription);
+    if (out.error) return res.status(out.code || 400).json(out);
+    res.json(out);
+  } catch (err) {
+    console.error('push subscribe error:', err);
+    res.status(500).json({ error: 'Could not save the alert' });
+  }
+});
+
+// POST /api/drivers/push/unsubscribe  { endpoint }
+router.post('/push/unsubscribe', async (req, res) => {
+  try {
+    await alerts.unsubscribe((req.body || {}).endpoint);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not remove the alert' });
+  }
+});
+
 module.exports = router;
