@@ -44,18 +44,76 @@ const alerts = require('../services/driverAlerts');
 // POST /api/rides/account/delete — user-initiated deletion of a rider's data
 // Required by App Store Guideline 5.1.1(v).
 router.post('/account/delete', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone number is required' });
     const clean = phone.replace(/[^0-9+]/g, '');
-    await pool.query(
-      'DELETE FROM ride_requests WHERE customer_phone = $1 OR customer_phone = $2',
-      [clean, phone.trim()]
-    );
-    res.json({ deleted: true });
+
+    const mine = await client.query(
+      'SELECT id FROM ride_requests WHERE customer_phone = $1 OR customer_phone = $2',
+      [clean, phone.trim()]);
+    const ids = mine.rows.map(r => r.id);
+    if (!ids.length) return res.json({ deleted: true, rides: 0, note: 'No such account.' });
+
+    await client.query('BEGIN');
+
+    /* 🚨 28 Sep. This was a bare DELETE, and ANY row pointing at the ride made
+       it fail with "Delete failed": a safety alert, a shared family link, a GPS
+       checkpoint, a message. So a passenger who had ever pressed the panic
+       button could NEVER delete her account - and account deletion is App Store
+       Guideline 5.1.1(v), the same rule that already forced the driver-side fix.
+       I hit it myself clearing up after a live test.
+
+       The tables that point at a ride are read from the catalog rather than
+       listed here, so a table added next month cannot quietly re-break this. */
+    const refs = await client.query(`
+      SELECT tc.table_name, kcu.column_name, col.is_nullable
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_name = tc.constraint_name
+        JOIN information_schema.constraint_column_usage ccu
+          ON ccu.constraint_name = tc.constraint_name
+        JOIN information_schema.columns col
+          ON col.table_name = tc.table_name AND col.column_name = kcu.column_name
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND ccu.table_name = 'ride_requests'
+         AND tc.table_name <> 'ride_requests'`);
+
+    const cleared = [];
+    for (const r of refs.rows) {
+      /* Identifiers come from the catalog, never from the request. A nullable
+         column is detached so an accounting row survives; a required one goes,
+         because it only exists to describe a ride that is being erased. */
+      const sql = r.is_nullable === 'YES'
+        ? `UPDATE "${r.table_name}" SET "${r.column_name}" = NULL WHERE "${r.column_name}" = ANY($1::uuid[])`
+        : `DELETE FROM "${r.table_name}" WHERE "${r.column_name}" = ANY($1::uuid[])`;
+      const out = await client.query(sql, [ids]);
+      if (out.rowCount) cleared.push(`${r.table_name}.${r.column_name}:${out.rowCount}`);
+    }
+
+    /* payments.subject_id is deliberately NOT a foreign key - a payment is
+       taken against a SUBJECT, which may be a ride, an order or a ticket - so
+       the catalog above cannot see it. Named here for that reason. ⛔ The
+       payment ROW is kept: it is a money record and it outlives the ride. Only
+       the link back to the deleted person is cut. */
+    const pay = await client.query(
+      `UPDATE payments SET subject_id = NULL
+        WHERE subject_type = 'ride' AND subject_id = ANY($1::text[])`,
+      [ids.map(String)]);
+    if (pay.rowCount) cleared.push('payments.subject_id:' + pay.rowCount);
+
+    const del = await client.query('DELETE FROM ride_requests WHERE id = ANY($1::uuid[])', [ids]);
+    await client.query('COMMIT');
+
+    console.warn(`[RIDER DELETE] removed ${del.rowCount} ride(s); cleared ${cleared.join(', ') || 'nothing'}`);
+    res.json({ deleted: true, rides: del.rowCount, cleared });
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Rider delete error:', err);
     res.status(500).json({ error: 'Delete failed' });
+  } finally {
+    client.release();
   }
 });
 
