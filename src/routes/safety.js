@@ -224,8 +224,18 @@ router.post('/checkpoint', async (req, res) => {
     const r = ride.rows[0];
     if (r.status !== 'in_progress') return res.json({ deviation: false });
 
+    /* ⚠️ This used to be LIMIT 5 with no timestamp. The phone sends a
+       checkpoint every 5 SECONDS, so five rows is 25 seconds of history - the
+       code could not have measured "how long has it been stopped" even if it
+       had wanted to. It now reads enough history to see several minutes, and
+       it reads created_at, which is the whole point. */
     const checkpoints = await pool.query(
-      'SELECT lat, lng FROM route_checkpoints WHERE ride_id = $1 ORDER BY created_at DESC LIMIT 5',
+      `SELECT lat, lng, created_at
+         FROM route_checkpoints
+        WHERE ride_id = $1
+          AND created_at > NOW() - INTERVAL '20 minutes'
+        ORDER BY created_at DESC
+        LIMIT 400`,
       [ride_id]
     );
 
@@ -246,13 +256,39 @@ router.post('/checkpoint', async (req, res) => {
         reason = 'route_deviation';
       }
 
-      const prev = checkpoints.rows[1];
-      const timeDiff = 30;
-      const dist = haversine(prev.lat, prev.lng, latest.lat, latest.lng);
-      if (dist < 0.02 && checkpoints.rows.length >= 3) {
-        const older = checkpoints.rows[2];
-        const dist2 = haversine(older.lat, older.lng, latest.lat, latest.lng);
-        if (dist2 < 0.03) {
+      /* 🚨 THE FALSE ALARM THAT WENT OFF ON JENNIFER, 1 Oct 2026.
+         The old rule: if the last THREE checkpoints were within 20-30 m, call
+         it a suspicious stop and fire the emergency countdown. Three
+         checkpoints is fifteen seconds. A traffic light is longer than that.
+         It also declared `const timeDiff = 30;` and never used it, so the rule
+         counted positions and never once looked at the clock.
+         Port-au-Prince traffic was pulling the panic button: her ride was
+         1.2 km and the alarm escalated to a silent alert to her trusted
+         contacts and the security team.
+
+         Jeffery, 1 Oct: "requiring the vehicle to be stopped for a meaningful
+         amount of time... My suggestion is 5 minutes continuously stopped."
+
+         So: walk back from the newest checkpoint for as long as the car has
+         stayed inside a small circle, and only call it a stop if that has been
+         true for five unbroken minutes.
+         ⛔ This changes ONLY the automatic stop detection. The manual SOS
+         button is untouched and still fires instantly. */
+      const STOP_RADIUS_KM = 0.05;   /* 50 m - a stationary phone drifts */
+      const STOP_MINUTES   = 5;
+
+      let stoppedSince = null;
+      for (let i = 1; i < checkpoints.rows.length; i++) {
+        const row = checkpoints.rows[i];
+        if (haversine(row.lat, row.lng, latest.lat, latest.lng) > STOP_RADIUS_KM) {
+          break;              /* it moved - the stop ends here */
+        }
+        stoppedSince = row.created_at;
+      }
+
+      if (stoppedSince) {
+        const stoppedMs = new Date(latest.created_at) - new Date(stoppedSince);
+        if (stoppedMs >= STOP_MINUTES * 60 * 1000) {
           deviation = true;
           reason = 'suspicious_stop';
         }
