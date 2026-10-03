@@ -146,7 +146,11 @@ router.post('/create', async (req, res) => {
       subject_type: subject, subject_id: subjectId,
       amount: amountToCharge, method: chosen, payer_phone, currency,
       platform: platform || 'msouwout', user_id, metadata,
-      return_url: returnUrl
+      return_url: returnUrl,
+      /* "The page errored - give me a new one." Passed straight through; the
+         service decides whether that is safe, and checks the old attempt was
+         not actually paid before letting go of it. */
+      fresh: !!(req.body && req.body.fresh)
     });
 
     if (!out.ok) {
