@@ -233,7 +233,8 @@ function newReference(prefix) {
  * that succeeds while the app is closed is still something we know to ask about.
  */
 async function startPayment({ subject_type, subject_id, amount, method, payer_phone,
-                              currency, platform, user_id, metadata, return_url }) {
+                              currency, platform, user_id, metadata, return_url,
+                              fresh }) {
   const cur = (currency || 'HTG').toUpperCase();
   const amt = Math.ceil(Number(amount));
 
@@ -275,6 +276,16 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
    * stopping a double tap becoming two transactions. Outside it, she gets a
    * fresh token, because an expired link is not "the page she is looking at" -
    * it is a dead end that looks exactly like a broken product. */
+  /* 🚨🚨 3 Oct, Jennifer on the NatCash page: "when she taps next she gets an
+     error message", over and over. The reuse window is TEN MINUTES, and a
+     wallet transaction can die long before that - it is spent the moment it is
+     attempted. So her first attempt failed, and every retry inside the window
+     handed her back THE SAME DEAD TRANSACTION. The retry could never work.
+
+     `fresh` is how the app says "she has seen this page fail, give her a new
+     one". ⛔ It is NOT a way around the double-charge guard: before abandoning
+     the old attempt we ASK THE GATEWAY whether it was in fact paid, and if it
+     was we return that instead of taking her money twice. */
   if (subject_id) {
     const live = await pool.query(
       `SELECT * FROM payments
@@ -285,7 +296,32 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
         ORDER BY created_at DESC LIMIT 1`,
       [subject_type || 'ride', String(subject_id), amt, method, REUSE_WINDOW_MIN]);
     if (live.rows.length) {
-      return { ok: true, payment: live.rows[0], reused: true };
+      const old = live.rows[0];
+      if (!fresh) return { ok: true, payment: old, reused: true };
+
+      /* She asked for a new page. Settle the old one first. */
+      let settled = null;
+      try { settled = await provider.verify({ reference_id: old.reference_id }); }
+      catch (e) { settled = null; }
+      if (settled && settled.ok && settled.paid) {
+        await pool.query(
+          `UPDATE payments SET status='paid', paid_at=COALESCE(paid_at, NOW()),
+                  provider_ref=COALESCE(provider_ref,$2), updated_at=NOW()
+            WHERE id=$1`, [old.id, settled.provider_ref || null]);
+        const again = await pool.query('SELECT * FROM payments WHERE id=$1', [old.id]);
+        return { ok: true, payment: again.rows[0], reused: true, already_paid: true };
+      }
+      /* Not paid. Take the LINK away so it can never be handed to her again,
+         and fall through to a genuinely new transaction.
+
+         ⛔ The row deliberately STAYS 'pending'. The poller below only watches
+         pending rows, so marking this 'abandoned' would mean that if she did
+         go back and pay the old link after all, nothing would ever notice and
+         she would be charged without being credited. Clearing payment_url is
+         enough: the reuse query above requires it to be present. */
+      await pool.query(
+        `UPDATE payments SET payment_url=NULL, updated_at=NOW() WHERE id=$1`,
+        [old.id]);
     }
   }
 
