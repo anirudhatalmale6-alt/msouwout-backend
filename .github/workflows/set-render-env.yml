@@ -12,17 +12,21 @@ on:
   workflow_dispatch:
     inputs:
       service_name:
-        description: Render service name
+        description: Render service ID (srv-...) or service name
         required: true
-        default: myplopplop-api
+        default: srv-d79f71p4tr6s73csprgg
       env_key:
         description: Name of the environment variable to set
         required: true
         default: OPENAI_API_KEY
       secret_name:
-        description: Which repository secret holds the value (OPENAI_API_KEY only, for now)
+        description: Which repository secret holds the value
         required: true
-        default: OPENAI_API_KEY
+        default: INTERNAL_SERVICE_KEY
+        type: choice
+        options:
+          - INTERNAL_SERVICE_KEY
+          - OPENAI_API_KEY
 
 concurrency:
   group: render-env
@@ -34,7 +38,10 @@ jobs:
     timeout-minutes: 20
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      SECRET_VALUE: ${{ secrets.OPENAI_API_KEY }}
+      # Chosen by name, never typed in. Workflow INPUTS are written to a public
+      # log on a public repository; repository SECRETS are masked. A shared key
+      # pasted into the UI would be published the moment the job ran.
+      SECRET_VALUE: ${{ github.event.inputs.secret_name == 'INTERNAL_SERVICE_KEY' && secrets.INTERNAL_SERVICE_KEY || secrets.OPENAI_API_KEY }}
       SERVICE_NAME: ${{ github.event.inputs.service_name }}
       ENV_KEY: ${{ github.event.inputs.env_key }}
     steps:
@@ -42,13 +49,22 @@ jobs:
         run: |
           [ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }
           [ -n "$SECRET_VALUE" ] || { echo "the value secret is empty"; exit 1; }
-          [ "${{ github.event.inputs.secret_name }}" = "OPENAI_API_KEY" ] || { echo "only OPENAI_API_KEY is wired up"; exit 1; }
+          case "${{ github.event.inputs.secret_name }}" in
+            OPENAI_API_KEY|INTERNAL_SERVICE_KEY) ;;
+            *) echo "that secret is not wired up"; exit 1 ;;
+          esac
 
       - name: Resolve service id by name
         id: resolve
         run: |
           set -euo pipefail
-          sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d[0].get("service",d[0]))["id"] if d else "")')"
+          # A service ID never changes and nobody can rename it. haitibiznis-api
+          # is called "e.HaitiBiznis.com" in the dashboard, so a name lookup
+          # finds nothing - see the note in deploy-other-service.yml.
+          case "$SERVICE_NAME" in
+            srv-*) sid="$SERVICE_NAME" ;;
+            *) sid="$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?name=$SERVICE_NAME&limit=1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d[0].get("service",d[0]))["id"] if d else "")')" ;;
+          esac
           [ -n "$sid" ] || { echo "no service named $SERVICE_NAME"; exit 1; }
           echo "Resolved $SERVICE_NAME -> $sid"
           echo "sid=$sid" >> "$GITHUB_OUTPUT"
