@@ -27,6 +27,7 @@ on:
         options:
           - INTERNAL_SERVICE_KEY
           - DASH_PORTAL_KEY
+          - STRIPE_RESTRICTED_KEY
           - OPENAI_API_KEY
 
 concurrency:
@@ -42,7 +43,7 @@ jobs:
       # Chosen by name, never typed in. Workflow INPUTS are written to a public
       # log on a public repository; repository SECRETS are masked. A shared key
       # pasted into the UI would be published the moment the job ran.
-      SECRET_VALUE: ${{ github.event.inputs.secret_name == 'INTERNAL_SERVICE_KEY' && secrets.INTERNAL_SERVICE_KEY || github.event.inputs.secret_name == 'DASH_PORTAL_KEY' && secrets.DASH_PORTAL_KEY || secrets.OPENAI_API_KEY }}
+      SECRET_VALUE: ${{ github.event.inputs.secret_name == 'INTERNAL_SERVICE_KEY' && secrets.INTERNAL_SERVICE_KEY || github.event.inputs.secret_name == 'DASH_PORTAL_KEY' && secrets.DASH_PORTAL_KEY || github.event.inputs.secret_name == 'STRIPE_RESTRICTED_KEY' && secrets.STRIPE_RESTRICTED_KEY || secrets.OPENAI_API_KEY }}
       SERVICE_NAME: ${{ github.event.inputs.service_name }}
       ENV_KEY: ${{ github.event.inputs.env_key }}
     steps:
@@ -51,7 +52,7 @@ jobs:
           [ -n "$RENDER_API_KEY" ] || { echo "RENDER_API_KEY secret is not set"; exit 1; }
           [ -n "$SECRET_VALUE" ] || { echo "the value secret is empty"; exit 1; }
           case "${{ github.event.inputs.secret_name }}" in
-            OPENAI_API_KEY|INTERNAL_SERVICE_KEY|DASH_PORTAL_KEY) ;;
+            OPENAI_API_KEY|INTERNAL_SERVICE_KEY|DASH_PORTAL_KEY|STRIPE_RESTRICTED_KEY) ;;
             *) echo "that secret is not wired up"; exit 1 ;;
           esac
 
