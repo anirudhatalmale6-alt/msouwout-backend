@@ -535,12 +535,22 @@ router.get('/dash/summary', async (req, res) => {
     /* dash_fee is the WHOLE protection pot for a ride (rider half + driver
        half). The passenger's receipt shows only her half, which is why a
        receipt says 13 and the partner is owed 25. */
+    /* 🚨🚨 ONLY RIDES THAT WERE ACTUALLY PAID COUNT AS MONEY OWED.
+       The first version of this counted every COMPLETED ride with protection
+       on it - which swept in the September test rides, and would have shown
+       the partner 9 rides and 180 HTG when two rides had genuinely been paid.
+       A fee is owed when a passenger has paid it, not when somebody pressed
+       Fini on a test. Both figures are returned so the difference is visible
+       rather than hidden. */
+    const PAID = "LOWER(COALESCE(payment_status,'')) = 'paid'";
     const totals = await pool.query(
-      `SELECT COUNT(*)::int                               AS rides,
-              COALESCE(SUM(dash_fee),0)::int              AS collected,
-              COALESCE(SUM(medical_fee),0)::int           AS rider_paid,
-              MIN(completed_at)                           AS first_ride,
-              MAX(completed_at)                           AS last_ride
+      `SELECT COUNT(*) FILTER (WHERE ${PAID})::int                       AS rides,
+              COALESCE(SUM(dash_fee)       FILTER (WHERE ${PAID}),0)::int AS collected,
+              COALESCE(SUM(medical_fee)    FILTER (WHERE ${PAID}),0)::int AS rider_paid,
+              COUNT(*)::int                                              AS rides_all,
+              COALESCE(SUM(dash_fee),0)::int                             AS collected_all,
+              MIN(completed_at) FILTER (WHERE ${PAID})                   AS first_ride,
+              MAX(completed_at) FILTER (WHERE ${PAID})                   AS last_ride
          FROM ride_requests
         WHERE status='completed' AND COALESCE(medical_protection,false)=true`);
 
@@ -550,13 +560,16 @@ router.get('/dash/summary', async (req, res) => {
               COALESCE(SUM(dash_fee),0)::int         AS collected
          FROM ride_requests
         WHERE status='completed' AND COALESCE(medical_protection,false)=true
+          AND LOWER(COALESCE(payment_status,'')) = 'paid'
         GROUP BY 1 ORDER BY 1 DESC LIMIT 24`);
 
     /* Reference code and amount only - enough to tie a transfer to a ride. */
     const recent = await pool.query(
-      `SELECT tracking_code, completed_at, COALESCE(dash_fee,0)::int AS fee
+      `SELECT tracking_code, completed_at, COALESCE(dash_fee,0)::int AS fee,
+              LOWER(COALESCE(payment_status,'')) AS paid_status
          FROM ride_requests
         WHERE status='completed' AND COALESCE(medical_protection,false)=true
+          AND LOWER(COALESCE(payment_status,'')) = 'paid'
         ORDER BY completed_at DESC LIMIT 20`);
 
     const incidents = await pool.query(
@@ -567,6 +580,10 @@ router.get('/dash/summary', async (req, res) => {
     res.json({
       rides: t.rides, collected: t.collected, rider_paid: t.rider_paid,
       owed: t.collected,                 /* nothing has been transferred yet */
+      /* completed-but-never-paid, i.e. the test rides. Shown so nobody has to
+         wonder why the portal and the ride list disagree. */
+      rides_completed_unpaid: t.rides_all - t.rides,
+      collected_if_unpaid_counted: t.collected_all,
       first_ride: t.first_ride, last_ride: t.last_ride,
       incidents: incidents.rows[0].n,
       monthly: monthly.rows,
