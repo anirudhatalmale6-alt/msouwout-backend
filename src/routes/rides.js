@@ -507,6 +507,78 @@ router.get('/reports/attention', async (req, res) => {
 // GET /api/rides/reports/money — Money split & settlement report (admin)
 // Every completed ride contributes three lines: driver payout, DASH fund, MsouWout revenue.
 // Defaults to the last 24 hours (the payout/settlement window) plus a 7-day daily series.
+/* ═══ THE DASH PARTNER PORTAL ════════════════════════════════════════════
+   Jeffery, 6 Oct 2026: "I have a meeting with dash and need to show them their
+   dashboard and how it worked especially we made 2 real paid rides already."
+
+   The portal page showed ZEROS, because it never asked the server anything -
+   it was a static mock-up. He was about to present it to the partner it was
+   built for, after two real rides had already collected their fee.
+
+   🔑 WHAT THIS DELIBERATELY DOES NOT RETURN: no passenger name, no telephone
+   number, no address, no driver name. DASH is owed a FEE, not a ride history.
+   Aggregates and a reference code are everything the partner needs to reconcile
+   a bank transfer, and nothing more.
+
+   Guarded by DASH_PORTAL_KEY so the ride volume of the whole company is not a
+   public figure. Fails CLOSED when the key is unset.                          */
+router.get('/dash/summary', async (req, res) => {
+  try {
+    const expected = process.env.DASH_PORTAL_KEY;
+    if (!expected) return res.status(503).json({ error: 'portal not configured' });
+    const given = String(req.get('x-dash-key') || req.query.k || '');
+    const a = Buffer.from(given), b = Buffer.from(expected);
+    if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    /* dash_fee is the WHOLE protection pot for a ride (rider half + driver
+       half). The passenger's receipt shows only her half, which is why a
+       receipt says 13 and the partner is owed 25. */
+    const totals = await pool.query(
+      `SELECT COUNT(*)::int                               AS rides,
+              COALESCE(SUM(dash_fee),0)::int              AS collected,
+              COALESCE(SUM(medical_fee),0)::int           AS rider_paid,
+              MIN(completed_at)                           AS first_ride,
+              MAX(completed_at)                           AS last_ride
+         FROM ride_requests
+        WHERE status='completed' AND COALESCE(medical_protection,false)=true`);
+
+    const monthly = await pool.query(
+      `SELECT to_char(date_trunc('month', completed_at),'YYYY-MM') AS period,
+              COUNT(*)::int                          AS rides,
+              COALESCE(SUM(dash_fee),0)::int         AS collected
+         FROM ride_requests
+        WHERE status='completed' AND COALESCE(medical_protection,false)=true
+        GROUP BY 1 ORDER BY 1 DESC LIMIT 24`);
+
+    /* Reference code and amount only - enough to tie a transfer to a ride. */
+    const recent = await pool.query(
+      `SELECT tracking_code, completed_at, COALESCE(dash_fee,0)::int AS fee
+         FROM ride_requests
+        WHERE status='completed' AND COALESCE(medical_protection,false)=true
+        ORDER BY completed_at DESC LIMIT 20`);
+
+    const incidents = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM ride_requests
+        WHERE safety_state IS NOT NULL AND safety_state <> ''`);
+
+    const t = totals.rows[0];
+    res.json({
+      rides: t.rides, collected: t.collected, rider_paid: t.rider_paid,
+      owed: t.collected,                 /* nothing has been transferred yet */
+      first_ride: t.first_ride, last_ride: t.last_ride,
+      incidents: incidents.rows[0].n,
+      monthly: monthly.rows,
+      recent: recent.rows,
+      generated_at: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('DASH summary error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.get('/reports/money', async (req, res) => {
   try {
     /* The gate for this route is middleware/adminOnly, mounted app-wide before
