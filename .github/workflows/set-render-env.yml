@@ -29,6 +29,18 @@ on:
           - DASH_PORTAL_KEY
           - STRIPE_RESTRICTED_KEY
           - OPENAI_API_KEY
+          - BREVO_API_KEY
+          - WHATSAPP_TOKEN
+          - WHATSAPP_PHONE_ID
+          # For values that are NOT credentials - a sender address, a template
+          # name. Those go in plain_value below and may safely appear in the
+          # public log. Nothing that is a secret is allowed through this door;
+          # the allow-list in the Guard step enforces it.
+          - PLAIN
+      plain_value:
+        description: The value, ONLY when secret_name is PLAIN (never a credential)
+        required: false
+        default: ''
 
 concurrency:
   group: render-env
@@ -43,7 +55,7 @@ jobs:
       # Chosen by name, never typed in. Workflow INPUTS are written to a public
       # log on a public repository; repository SECRETS are masked. A shared key
       # pasted into the UI would be published the moment the job ran.
-      SECRET_VALUE: ${{ github.event.inputs.secret_name == 'INTERNAL_SERVICE_KEY' && secrets.INTERNAL_SERVICE_KEY || github.event.inputs.secret_name == 'DASH_PORTAL_KEY' && secrets.DASH_PORTAL_KEY || github.event.inputs.secret_name == 'STRIPE_RESTRICTED_KEY' && secrets.STRIPE_RESTRICTED_KEY || secrets.OPENAI_API_KEY }}
+      SECRET_VALUE: ${{ github.event.inputs.secret_name == 'INTERNAL_SERVICE_KEY' && secrets.INTERNAL_SERVICE_KEY || github.event.inputs.secret_name == 'DASH_PORTAL_KEY' && secrets.DASH_PORTAL_KEY || github.event.inputs.secret_name == 'STRIPE_RESTRICTED_KEY' && secrets.STRIPE_RESTRICTED_KEY || github.event.inputs.secret_name == 'BREVO_API_KEY' && secrets.BREVO_API_KEY || github.event.inputs.secret_name == 'WHATSAPP_TOKEN' && secrets.WHATSAPP_TOKEN || github.event.inputs.secret_name == 'WHATSAPP_PHONE_ID' && secrets.WHATSAPP_PHONE_ID || github.event.inputs.secret_name == 'PLAIN' && github.event.inputs.plain_value || secrets.OPENAI_API_KEY }}
       SERVICE_NAME: ${{ github.event.inputs.service_name }}
       ENV_KEY: ${{ github.event.inputs.env_key }}
     steps:
@@ -53,6 +65,16 @@ jobs:
           [ -n "$SECRET_VALUE" ] || { echo "the value secret is empty"; exit 1; }
           case "${{ github.event.inputs.secret_name }}" in
             OPENAI_API_KEY|INTERNAL_SERVICE_KEY|DASH_PORTAL_KEY|STRIPE_RESTRICTED_KEY) ;;
+            BREVO_API_KEY|WHATSAPP_TOKEN|WHATSAPP_PHONE_ID) ;;
+            PLAIN)
+              # ⛔ A plain value is written to a PUBLIC log. Only env keys that
+              # are genuinely not credentials may come through here - a sender
+              # address, a template name, an API version. Anything else must
+              # be a repository secret.
+              case "$ENV_KEY" in
+                MAIL_FROM|MAIL_FROM_NAME|WHATSAPP_TEMPLATE_TICKET|WHATSAPP_TEMPLATE_COURSE|WHATSAPP_API_VERSION) ;;
+                *) echo "$ENV_KEY may not be set as a plain value - use a repository secret"; exit 1 ;;
+              esac ;;
             *) echo "that secret is not wired up"; exit 1 ;;
           esac
 
