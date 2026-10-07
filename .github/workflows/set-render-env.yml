@@ -72,7 +72,7 @@ jobs:
               # address, a template name, an API version. Anything else must
               # be a repository secret.
               case "$ENV_KEY" in
-                MAIL_FROM|MAIL_FROM_NAME|WHATSAPP_TEMPLATE_TICKET|WHATSAPP_TEMPLATE_COURSE|WHATSAPP_API_VERSION) ;;
+                MAIL_FROM|MAIL_FROM_NAME|MAIL_REPLY_TO|WHATSAPP_TEMPLATE_TICKET|WHATSAPP_TEMPLATE_COURSE|WHATSAPP_API_VERSION) ;;
                 *) echo "$ENV_KEY may not be set as a plain value - use a repository secret"; exit 1 ;;
               esac ;;
             *) echo "that secret is not wired up"; exit 1 ;;
