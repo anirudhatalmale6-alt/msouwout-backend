@@ -532,9 +532,15 @@ router.get('/dash/summary', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    /* dash_fee is the WHOLE protection pot for a ride (rider half + driver
-       half). The passenger's receipt shows only her half, which is why a
-       receipt says 13 and the partner is owed 25. */
+    /* ⚠️ CORRECTING WHAT THIS COMMENT USED TO SAY. It read "dash_fee is the
+       WHOLE protection pot" - it is not. dash_fee is DASH's 80% share (20).
+       medical_fee is the pot (25). Getting those two the wrong way round is
+       how the dashboard ended up labelling DASH's 120 as "fees collected at
+       25 HTG per ride", which for 6 rides should read 150.
+
+       The pot per ride is 25 = 13 from the passenger + 12 from the driver.
+       Both halves are returned below so the partner can see the whole sum
+       rather than being asked to trust it. */
     /* 🚨🚨 ONLY RIDES THAT WERE ACTUALLY PAID COUNT AS MONEY OWED.
        The first version of this counted every COMPLETED ride with protection
        on it - which swept in the September test rides, and would have shown
@@ -546,7 +552,13 @@ router.get('/dash/summary', async (req, res) => {
     const totals = await pool.query(
       `SELECT COUNT(*) FILTER (WHERE ${PAID})::int                       AS rides,
               COALESCE(SUM(dash_fee)       FILTER (WHERE ${PAID}),0)::int AS collected,
-              COALESCE(SUM(medical_fee)    FILTER (WHERE ${PAID}),0)::int AS rider_paid,
+              COALESCE(SUM(medical_fee)    FILTER (WHERE ${PAID}),0)::int AS pot,
+              /* What the PASSENGER actually handed over, taken from the row
+                 rather than assumed: the difference between what she was
+                 billed and the fare. 13 per ride, not 12.50 - see
+                 services/pricing.js calculateMedicalFee. */
+              COALESCE(SUM(GREATEST(COALESCE(total_with_protection,0) - COALESCE(price,0), 0))
+                       FILTER (WHERE ${PAID}),0)::int                      AS rider_share_collected,
               COUNT(*)::int                                              AS rides_all,
               COALESCE(SUM(dash_fee),0)::int                             AS collected_all,
               MIN(completed_at) FILTER (WHERE ${PAID})                   AS first_ride,
@@ -557,7 +569,11 @@ router.get('/dash/summary', async (req, res) => {
     const monthly = await pool.query(
       `SELECT to_char(date_trunc('month', completed_at),'YYYY-MM') AS period,
               COUNT(*)::int                          AS rides,
-              COALESCE(SUM(dash_fee),0)::int         AS collected
+              COALESCE(SUM(dash_fee),0)::int         AS collected,
+              /* The pot for the month, so the statement can show the 25 and
+                 the 20 as two different columns instead of printing DASH's
+                 share twice under two different headings. */
+              COALESCE(SUM(medical_fee),0)::int      AS pot
          FROM ride_requests
         WHERE status='completed' AND COALESCE(medical_protection,false)=true
           AND LOWER(COALESCE(payment_status,'')) = 'paid'
@@ -577,8 +593,29 @@ router.get('/dash/summary', async (req, res) => {
         WHERE safety_state IS NOT NULL AND safety_state <> ''`);
 
     const t = totals.rows[0];
+    /* The driver's half is the remainder of the pot, which is also exactly
+       what services/earnings.js deducts from him. Deriving it rather than
+       summing driver_dash_share on purpose: that column holds 12.50 on rows
+       created before 7 Oct, while the ledger has always deducted 12. The pot
+       and the two halves must agree, and this is the figure that does. */
+    const riderPaid = t.rider_share_collected;
+    const driverPaid = t.pot - riderPaid;
     res.json({
-      rides: t.rides, collected: t.collected, rider_paid: t.rider_paid,
+      rides: t.rides, collected: t.collected,
+      /* The full protection pot - 25 a ride. This is the number that goes with
+         the words "25 HTG per ride"; `collected` is DASH's 80% of it. */
+      pot: t.pot,
+      rider_share_collected: riderPaid,
+      driver_share_collected: driverPaid,
+      /* Per-ride, so the partner can check the arithmetic in one line. */
+      per_ride: { pot: 25, rider: 13, driver: 12, dash: 20, msouwout: 5 },
+      /* 🔑 Does the money add up? Returned rather than asserted, so a future
+         drift shows on the partner's own screen instead of being discovered
+         in a meeting. */
+      reconciles: (riderPaid + driverPaid) === t.pot,
+      /* Kept under its old name as well: the portal page in the wild may still
+         be reading it. It was always the POT, never what the rider paid. */
+      rider_paid: t.pot,
       owed: t.collected,                 /* nothing has been transferred yet */
       /* completed-but-never-paid, i.e. the test rides. Shown so nobody has to
          wonder why the portal and the ride list disagree. */

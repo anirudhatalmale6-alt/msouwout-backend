@@ -21,8 +21,12 @@ const DEFAULT_CONFIG = {
   waiting_free_min: 3,
   // Money split
   commission_rate: 0.20,        // MsouWout share of the fare
-  dash_fee_rider: 12.5,         // rider pays on top of the fare
-  dash_fee_driver: 12.5,        // deducted from the driver share
+  /* The two halves of the 25 HTG pot. Kept at 12.5 each because that is the
+     AGREEMENT; calculateMedicalFee() turns them into the whole gourdes that
+     are actually charged - 13 from the rider, 12 from the driver - because
+     nothing in this platform moves half a gourde. */
+  dash_fee_rider: 12.5,         // rider pays on top of the fare  → charged 13
+  dash_fee_driver: 12.5,        // deducted from the driver share → charged 12
   dash_msouwout_share: 0.20,    // MsouWout cut of the 25 HTG DASH pot (→ 5); rest (20) to DASH fund
   road_factor: 1.30,            // straight-line → road distance factor
   // Cancellation
@@ -202,22 +206,49 @@ function calculateCommission(price, config) {
   return { platform_fee: platformFee, driver_earning: driverEarning, commission_rate: rate };
 }
 
-// DASH Protection — flat 25 HTG pot per completed ride (12.50 rider + 12.50 driver),
-// split 80% DASH fund (20) / 20% MsouWout (5). No percentage of the fare.
+/* DASH Protection — a flat 25 HTG pot per completed ride, split 80% to the
+   DASH fund (20) and 20% to MsouWout (5). No percentage of the fare.
+ *
+ * 🚨 THE HALVES ARE 13 AND 12, NOT 12.50 AND 12.50. Jeffery, 7 Oct 2026:
+ * "the passenger's receipt actually shows and charges 13 HTG, not 12.50...
+ * where does the extra 0.50 HTG go?"
+ *
+ * He is right that it is 13, and the answer is that the other half is 12. HTG
+ * has no half-gourde in practice - every amount this platform charges, stores
+ * and settles is a whole number - so a 25 pot cannot be halved evenly and one
+ * side has to carry the odd gourde.
+ *
+ * Until today that happened by ACCIDENT, in two different places, and the two
+ * accidents happened to cancel out:
+ *   routes/rides.js   Math.round(price + 12.5)            rounds UP   → rider pays 13
+ *   services/earnings Math.round(driverGross - 12.5)      rounds UP   → driver pays 12
+ * 13 + 12 = 25, so the pot was always right and nothing was ever missing. But
+ * it was true by coincidence: anything that made driverGross non-integer, or
+ * any change of rounding, would have silently broken the reconciliation with
+ * the partner, and the declared shares (12.50/12.50) did not match the real
+ * ones (13/12) so nobody could check it.
+ *
+ * Now it is stated instead of stumbled into. The pot is still the sum of the
+ * two configured halves, the rider's half is rounded to a whole gourde, and
+ * the driver's half is WHATEVER IS LEFT. Those two always add to the pot, for
+ * any configuration, by construction rather than by luck.
+ *
+ * ⛔ This changes NO amount: 13, 12, 25, 20 and 5 are exactly what the live
+ * system has been charging. Proved against the six real paid rides. */
 function calculateMedicalFee(price, config) {
   const cfg = config || DEFAULT_CONFIG;
-  const riderShare = cfg.dash_fee_rider;      // 12.5
-  const driverShare = cfg.dash_fee_driver;    // 12.5
-  const pot = riderShare + driverShare;       // 25
-  const msouwoutFee = Math.round(pot * cfg.dash_msouwout_share); // 5
-  const dashFee = pot - msouwoutFee;          // 20
+  const pot = Math.round(cfg.dash_fee_rider + cfg.dash_fee_driver);   // 25
+  const riderShare = Math.round(cfg.dash_fee_rider);                  // 13
+  const driverShare = pot - riderShare;                               // 12 — the remainder
+  const msouwoutFee = Math.round(pot * cfg.dash_msouwout_share);      // 5
+  const dashFee = pot - msouwoutFee;                                  // 20
 
   return {
     medical_fee: pot,                 // 25 — full DASH pot
     dash_fee: dashFee,                // 20 — to DASH medical fund
     msouwout_medical_fee: msouwoutFee,// 5  — MsouWout cut of DASH
-    rider_share: riderShare,          // 12.5 — added to rider total
-    driver_share: driverShare         // 12.5 — deducted from driver
+    rider_share: riderShare,          // 13 — added to the rider's total
+    driver_share: driverShare         // 12 — deducted from the driver
   };
 }
 
