@@ -35,6 +35,10 @@ const CLIENT_ID = process.env.SOLUTIONIP_CLIENT_ID || 'pp_1ohu5zz2tcx';
    and a slow connection. */
 const REUSE_WINDOW_MIN = 10;
 const MIN_HTG = 20;
+/* Stripe's floor, in gourdes, with a little room above the measured 66 so a
+   movement in the exchange rate does not start refusing payments. Overridable
+   without a deploy. */
+const CARD_MIN_HTG = Number(process.env.CARD_MIN_HTG) || 75;
 
 /* How long to keep asking about a payment nobody finished. Roughly 30 minutes
    at the poll interval below, after which it becomes 'expired' — not 'failed',
@@ -73,6 +77,24 @@ const PROVIDERS = {
     get methods() { return stripe.configured() ? ['card'] : []; },
 
     async create({ reference_id, amount, return_url, payer_phone }) {
+      /* 🚨 STRIPE HAS ITS OWN MINIMUM, AND IT IS NOT OURS.
+         Measured against the live account, not guessed: 20 HTG is refused
+         ("20.00 G converts to approximately $0.15"), 50 HTG is refused at
+         $0.38, 70 HTG is accepted. Stripe's rule is "at least 50 cents" in
+         the settlement currency, so the gourde threshold moves with the
+         exchange rate - today it sits near 66.
+
+         MIN_HTG here is 20, which is right for a wallet and wrong for a card.
+         Without this check the server would happily create a session and the
+         passenger would meet Stripe's own error on the payment page, with no
+         idea that MonCash would have worked. Refused here instead, in words
+         that tell them what to do. */
+      if (amount < CARD_MIN_HTG) {
+        return { ok: false,
+          error: 'Kat kredi mande omwen ' + CARD_MIN_HTG + ' HTG. Pou yon ti ' +
+                 'montan, chwazi MonCash oswa NatCash.',
+          raw: { below_card_minimum: true, amount, minimum: CARD_MIN_HTG } };
+      }
       const sess = await stripe.createCheckout({
         amount, currency: 'HTG',
         label: 'MsouWout — kous ' + reference_id,
@@ -651,5 +673,5 @@ module.exports = {
      payment landing after completion - is not reachable any other way without
      standing up a fake gateway. */
   applyToSubject,
-  MIN_HTG, MAX_ATTEMPTS, PROVIDERS
+  MIN_HTG, CARD_MIN_HTG, MAX_ATTEMPTS, PROVIDERS
 };
