@@ -68,9 +68,13 @@ function splitFor(ride) {
 
      ⛔ Only passengers whose coverage is ACTIVE count. A registered but
      unpaid extra passenger is not covered, so DASH is not owed for them. */
-  const extraPax = Number(ride.extra_pax) || 0;
-  const perHead = pricing.calculateExtraPassenger();
-  const extraDash = extraPax * perHead.dash_fee;              // 13 each
+  /* Taken from the rows themselves, which hold the figure agreed at booking.
+     Falls back to counting heads at today's moto rate only when the caller
+     did not supply it, so an older call site cannot silently produce zero. */
+  const extraDash = (ride.extra_dash != null)
+    ? Number(ride.extra_dash) || 0
+    : (Number(ride.extra_pax) || 0) *
+      pricing.calculateExtraPassenger(null, 'moto').dash_fee;
 
   const rows = [
     { type: 'driver',
@@ -116,6 +120,12 @@ const RIDE_SELECT = `
             response as well as from the ledger, and the two must not be able
             to disagree. ⛔ coverage_active, not just the row existing: an
             unpaid extra passenger earns DASH nothing. */
+         /* 🔑 SUM WHAT WAS AGREED, do not recompute it. Each row stores the
+            dash_fee that applied when the passenger was registered, so a
+            later change to the rate - or a different rate for cars than for
+            motos - can never silently rewrite what an old ride owed. */
+         (SELECT COALESCE(SUM(x.dash_fee),0) FROM ride_extra_passengers x
+           WHERE x.ride_id = r.id AND x.coverage_active = true)::int AS extra_dash,
          (SELECT COUNT(*) FROM ride_extra_passengers x
            WHERE x.ride_id = r.id AND x.coverage_active = true)::int AS extra_pax,
          d.phone AS driver_phone, d.referral_partner,

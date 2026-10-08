@@ -280,15 +280,23 @@ router.post('/request', async (req, res) => {
        ⛔ Capped at 2. A moto carries a driver and at most two passengers in
        practice, and an unbounded list is a free way to make the platform owe
        DASH any number it likes. */
-    const EXTRA_MAX = 2;
-    const extraPax = (Array.isArray(req.body.extra_passengers)
+    /* 🚨 PER VEHICLE, and refused outright when that vehicle has no shared-ride
+       fee configured. A car extra passenger registered against a fee of 0
+       would leave DASH owed 13 that nobody paid, and it would come out of the
+       driver. See pricing.extra_passenger_fee_car. */
+    const perHead = pricing.calculateExtraPassenger(config, rideType);
+    const extraPax = (perHead.configured && Array.isArray(req.body.extra_passengers)
       ? req.body.extra_passengers : [])
       .map(p => ({
         name: String((p && p.name) || '').trim().slice(0, 120),
         phone: String((p && p.phone) || '').trim().slice(0, 40)
       }))
       .filter(p => p.name && p.phone.replace(/\D/g, '').length >= 8)
-      .slice(0, EXTRA_MAX);
+      .slice(0, perHead.max);
+    if (!perHead.configured && (req.body.extra_passengers || []).length) {
+      console.warn('[DASH] extra passengers sent for a ' + rideType +
+                   ' but no shared-ride fee is configured for it - ignored.');
+    }
 
     // Delegation validation
     const delegated = is_delegated === true;
@@ -362,7 +370,7 @@ router.post('/request', async (req, res) => {
        services/payments.js, when the gateway confirms the money. Registered
        is not covered. */
     if (extraPax.length) {
-      const per = pricing.calculateExtraPassenger(config);
+      const per = perHead;
       for (const p of extraPax) {
         try {
           await pool.query(
@@ -436,10 +444,9 @@ router.post('/request', async (req, res) => {
     /* So the confirmation screen can say who is covered and for how much,
        instead of the passenger having to trust that the 50 did something. */
     if (extraPax.length) {
-      const per = pricing.calculateExtraPassenger(config);
       response.extra_passengers = extraPax.map(p => ({
         name: p.name, phone: p.phone,
-        fee: per.fee, dash_fee: per.dash_fee,
+        fee: perHead.fee, dash_fee: perHead.dash_fee,
         coverage_active: false            /* until the gateway confirms */
       }));
     }

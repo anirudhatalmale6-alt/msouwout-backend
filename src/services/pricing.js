@@ -45,7 +45,26 @@ const DEFAULT_CONFIG = {
      40 with the driver. Getting to 27/13 is therefore ONE movement: 13 HTG
      from the driver to DASH, per confirmed extra passenger. That is why the
      commission structure he told me not to touch is genuinely untouched. */
-  extra_passenger_fee: 50,      // what the shared-ride option already costs
+  /* 🚨 PER VEHICLE. Jeffery, 8 Oct: "This feature is NOT limited to
+     motorcycles. It must work for BOTH MOTO AND CARS... Each additional
+     passenger pays the existing shared-ride fee applicable to their vehicle
+     type. Do not invent or change car pricing."
+
+     ⛔ THERE IS NO EXISTING CAR FEE. The booking page offers a moto "Pasaje
+     anplis (+50 HTG)" and, for a car, only "Estòp anplis (+75)" and "Gwo bagaj
+     (+100)" - which are a stop and luggage, not people, and he said
+     explicitly not to confuse them. So the car fee is left at 0, meaning NOT
+     CONFIGURED, and a car extra passenger is refused rather than registered
+     for nothing. Owing DASH 13 out of a fee that was never charged would come
+     straight out of the driver's pocket. One number from him switches it on. */
+  extra_passenger_fee_moto: 50,
+  extra_passenger_fee_car: 0,   // ⛔ 0 = not configured; awaiting his figure
+  /* How many EXTRA people may be registered beyond the one who booked.
+     "Moto: one additional passenger… Cars: multiple additional passengers, up
+     to the vehicle's legally permitted seating capacity." A saloon carries
+     four passengers, so three beyond the booker. */
+  extra_passenger_max_moto: 1,
+  extra_passenger_max_car: 3,
   extra_passenger_dash: 13,     // moved from the driver's share to DASH
   dash_msouwout_share: 0.20,    // MsouWout cut of the 25 HTG DASH pot (→ 5); rest (20) to DASH fund
   road_factor: 1.30,            // straight-line → road distance factor
@@ -307,13 +326,25 @@ async function calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideT
    Derived from the fee and the EXISTING commission rate rather than written
    out as three literals, so it cannot silently stop adding up to 50 if either
    number is ever changed. */
-function calculateExtraPassenger(config) {
+function calculateExtraPassenger(config, vehicleType) {
   const cfg = config || DEFAULT_CONFIG;
-  const fee = Math.round(cfg.extra_passenger_fee);              // 50
-  const msouwout = Math.round(fee * cfg.commission_rate);       // 10 - the ordinary commission
-  const dash = Math.round(cfg.extra_passenger_dash);            // 13
-  const driver = fee - msouwout - dash;                         // 27 - the remainder
-  return { fee, dash_fee: dash, msouwout_fee: msouwout, driver_fee: driver };
+  const car = String(vehicleType || 'moto').toLowerCase() === 'car';
+  const fee = Math.round(car ? cfg.extra_passenger_fee_car : cfg.extra_passenger_fee_moto);
+  const max = car ? cfg.extra_passenger_max_car : cfg.extra_passenger_max_moto;
+
+  /* ⛔ No fee means the option does not exist for this vehicle. Returning
+     configured:false rather than a zero split, so a caller cannot quietly
+     register somebody for nothing and leave DASH owed 13 the driver has to
+     find. */
+  if (!(fee > 0)) {
+    return { configured: false, fee: 0, dash_fee: 0, msouwout_fee: 0,
+             driver_fee: 0, max: max, vehicle: car ? 'car' : 'moto' };
+  }
+  const msouwout = Math.round(fee * cfg.commission_rate);       // the ordinary commission
+  const dash = Math.round(cfg.extra_passenger_dash);            // 13, both vehicles
+  const driver = fee - msouwout - dash;                         // the remainder
+  return { configured: true, fee, dash_fee: dash, msouwout_fee: msouwout,
+           driver_fee: driver, max: max, vehicle: car ? 'car' : 'moto' };
 }
 
 module.exports = {
