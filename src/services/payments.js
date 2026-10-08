@@ -458,6 +458,34 @@ async function applyToSubject(payment) {
       [payment.subject_id, payment.id, payment.method]
     );
 
+    /* ═══ THE EXTRA PASSENGERS ARE NOW COVERED, AND NOT BEFORE ═══════════
+       Jeffery, 8 Oct: "Activate their DASH coverage only after the server
+       confirms payment."
+
+       This is that moment, and it is the ONLY one: the gateway has told us
+       the money arrived. Being registered on the ride and being covered are
+       two different facts, which is why coverage_active is its own column and
+       why only this line may set it.
+
+       ⛔ AWAITED, unlike the ledger call below. splitFor() counts the
+       passengers whose coverage is active, so if this had not finished first
+       the ride would be recorded with DASH owed nothing for them, and the
+       unique constraint on (ride_id, recipient_type) would make that wrong
+       figure permanent. */
+    try {
+      const cov = await pool.query(
+        `UPDATE ride_extra_passengers
+            SET coverage_active = true, coverage_activated_at = NOW()
+          WHERE ride_id = $1 AND coverage_active = false
+        RETURNING id`, [payment.subject_id]);
+      if (cov.rows.length) {
+        console.warn(`[DASH] coverage activated for ${cov.rows.length} extra ` +
+                     `passenger(s) on ride ${payment.subject_id}`);
+      }
+    } catch (e) {
+      console.error('[DASH] could not activate extra-passenger coverage:', e.message);
+    }
+
     /* 🚨 A ride earns only when it is BOTH completed and paid, and those two
        facts arrive from different places: the driver presses Fini, and this
        poller hears back from the gateway. recordForRide used to be called from

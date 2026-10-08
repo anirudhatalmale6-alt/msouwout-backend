@@ -817,6 +817,41 @@ async function runMigrations(client) {
         VALUES ('admin_auth', '{"password":"MsouWout2026"}'::jsonb)
         ON CONFLICT (key) DO NOTHING;
       `);
+      /* ═══ SHARED-MOTO EXTRA PASSENGERS ═════════════════════════════════
+         Dr Laroche: a moto that picks up a second passenger leaves that
+         person uncovered. The booking page has offered "Pasaje anplis
+         (+50 HTG)" for months, but the server was never told a second person
+         existed - so they paid and were not insured, and DASH received
+         nothing for them.
+
+         One row per extra passenger, hanging off the ride. ⛔ ON DELETE
+         CASCADE: an extra passenger is part of a ride, never a record in
+         their own right, and must not outlive it.
+
+         🔑 coverage_active is written ONLY by the server, and only once the
+         ride's payment is confirmed. Jeffery: "Activate their DASH coverage
+         only after the server confirms payment." It is a separate column from
+         the row existing, because being registered and being covered are two
+         different facts and a passenger must never be told the second when
+         only the first is true. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ride_extra_passengers (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          ride_id UUID NOT NULL REFERENCES ride_requests(id) ON DELETE CASCADE,
+          name VARCHAR(255) NOT NULL,
+          phone VARCHAR(50) NOT NULL,
+          phone_key VARCHAR(20),
+          fee INTEGER NOT NULL DEFAULT 50,
+          dash_fee INTEGER NOT NULL DEFAULT 13,
+          driver_fee INTEGER NOT NULL DEFAULT 27,
+          msouwout_fee INTEGER NOT NULL DEFAULT 10,
+          coverage_active BOOLEAN NOT NULL DEFAULT false,
+          coverage_activated_at TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_extra_pax_ride ON ride_extra_passengers (ride_id);
+        CREATE INDEX IF NOT EXISTS idx_extra_pax_phone ON ride_extra_passengers (phone_key);
+      `);
       console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2).');
 }
 

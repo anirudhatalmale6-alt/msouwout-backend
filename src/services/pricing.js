@@ -27,6 +27,26 @@ const DEFAULT_CONFIG = {
      nothing in this platform moves half a gourde. */
   dash_fee_rider: 12.5,         // rider pays on top of the fare  → charged 13
   dash_fee_driver: 12.5,        // deducted from the driver share → charged 12
+
+  /* ═══ THE SHARED-MOTO EXTRA PASSENGER ══════════════════════════════════
+     Jeffery, 8 Oct, after agreeing it with Dr Laroche:
+       "Additional passenger pays 50 HTG · DASH Kouvèti Aksidan 13 ·
+        Driver receives 27 · MsouWout receives 10 · Total 50"
+       "No additional charge to the passenger."
+       "Keep the original passenger's DASH allocation unchanged."
+
+     🔑 THE 50 ALREADY EXISTS AND IS ALREADY COLLECTED. The booking page has
+     carried "Pasaje anplis (+50 HTG)" for months; the 50 is folded into the
+     fare and billed with the ride. So nothing new is charged to anybody - the
+     only change is where the 50 goes afterwards.
+
+     🔑 AND MSOUWOUT'S 10 NEEDS NO CODE AT ALL. The 50 rides inside `price`,
+     so the ordinary 20% commission already takes exactly 10 of it and leaves
+     40 with the driver. Getting to 27/13 is therefore ONE movement: 13 HTG
+     from the driver to DASH, per confirmed extra passenger. That is why the
+     commission structure he told me not to touch is genuinely untouched. */
+  extra_passenger_fee: 50,      // what the shared-ride option already costs
+  extra_passenger_dash: 13,     // moved from the driver's share to DASH
   dash_msouwout_share: 0.20,    // MsouWout cut of the 25 HTG DASH pot (→ 5); rest (20) to DASH fund
   road_factor: 1.30,            // straight-line → road distance factor
   // Cancellation
@@ -283,7 +303,21 @@ async function calculateRide(pickupLat, pickupLng, dropoffLat, dropoffLng, rideT
   };
 }
 
+/* What one extra passenger is worth to each party.
+   Derived from the fee and the EXISTING commission rate rather than written
+   out as three literals, so it cannot silently stop adding up to 50 if either
+   number is ever changed. */
+function calculateExtraPassenger(config) {
+  const cfg = config || DEFAULT_CONFIG;
+  const fee = Math.round(cfg.extra_passenger_fee);              // 50
+  const msouwout = Math.round(fee * cfg.commission_rate);       // 10 - the ordinary commission
+  const dash = Math.round(cfg.extra_passenger_dash);            // 13
+  const driver = fee - msouwout - dash;                         // 27 - the remainder
+  return { fee, dash_fee: dash, msouwout_fee: msouwout, driver_fee: driver };
+}
+
 module.exports = {
+  calculateExtraPassenger,
   getPricingConfig,
   savePricingConfig,
   calculatePrice,

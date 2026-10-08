@@ -29,6 +29,7 @@
       step that Jeffery has said must wait for his authorisation.
    =========================================================================== */
 
+const pricing = require('./pricing');
 const pool = require('../db/pool');
 
 /* Only a ride that is finished AND actually paid for creates an entitlement.
@@ -54,13 +55,32 @@ const ELIGIBLE = "r.status = 'completed' AND LOWER(COALESCE(r.payment_status,'')
 function splitFor(ride) {
   const driverGross = Number(ride.driver_earning) || 0;
   const driverDash = Number(ride.driver_dash_share) || 0;
+
+  /* ═══ THE SHARED-MOTO EXTRA PASSENGERS ═══════════════════════════════════
+     Agreed 8 Oct: 50 from the extra passenger → 13 DASH, 27 driver, 10
+     MsouWout.
+
+     🔑 ONE MOVEMENT, NOT THREE. The 50 is already inside `price`, so the
+     ordinary 20% commission has already given MsouWout exactly 10 and left 40
+     with the driver. All that remains is to move 13 of the driver's 40 to
+     DASH, which lands on 27/13/10 without touching the commission rate at all
+     - Jeffery: "Do not change the current commission structure."
+
+     ⛔ Only passengers whose coverage is ACTIVE count. A registered but
+     unpaid extra passenger is not covered, so DASH is not owed for them. */
+  const extraPax = Number(ride.extra_pax) || 0;
+  const perHead = pricing.calculateExtraPassenger();
+  const extraDash = extraPax * perHead.dash_fee;              // 13 each
+
   const rows = [
     { type: 'driver',
-      amount: Math.round(driverGross - driverDash),          // 80% of the fare, less his DASH share
+      /* 80% of the fare, less his own DASH half, less 13 for each covered
+         extra passenger he took on. */
+      amount: Math.round(driverGross - driverDash - extraDash),
       recipient_id: ride.driver_id || null,
       phone: ride.driver_payout_phone || ride.driver_phone || null },
     { type: 'dash',
-      amount: Math.round(Number(ride.dash_fee) || 0),         // the 20 HTG medical fund share
+      amount: Math.round((Number(ride.dash_fee) || 0) + extraDash),
       recipient_id: null, phone: null },
     { type: 'msouwout',
       amount: Math.round((Number(ride.platform_fee) || 0) +
@@ -90,6 +110,14 @@ const RIDE_SELECT = `
   SELECT r.id, r.tracking_code, r.driver_id, r.completed_at,
          r.driver_earning, r.driver_dash_share, r.dash_fee,
          r.platform_fee, r.msouwout_medical_fee,
+         /* How many extra passengers on this ride are actually COVERED.
+            Counted here rather than joined in splitFor, because splitFor is a
+            pure function and has to stay one - it is called from the ride
+            response as well as from the ledger, and the two must not be able
+            to disagree. ⛔ coverage_active, not just the row existing: an
+            unpaid extra passenger earns DASH nothing. */
+         (SELECT COUNT(*) FROM ride_extra_passengers x
+           WHERE x.ride_id = r.id AND x.coverage_active = true)::int AS extra_pax,
          d.phone AS driver_phone, d.referral_partner,
          p.commission_pct AS referral_pct, p.contact_phone AS referral_phone
     FROM ride_requests r

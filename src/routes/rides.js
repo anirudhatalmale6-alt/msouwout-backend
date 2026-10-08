@@ -265,6 +265,31 @@ router.post('/request', async (req, res) => {
     const msouwoutMedicalFee = med.msouwout_medical_fee; // 5 — MsouWout cut
     const driverDashShare = med.driver_share;      // 12.5 — deducted from driver at payout
 
+    /* ═══ SHARED MOTO: WHO ELSE IS ON IT ════════════════════════════════
+       The booking page has offered "Pasaje anplis (+50 HTG)" for months and
+       the 50 has always been billed inside the fare - but the second person
+       was never sent to the server, so they paid and were not covered, and
+       DASH got nothing for them.
+
+       ⛔ A name AND a phone or the row is dropped. The whole point is that
+       DASH can identify the person in an ambulance; an extra passenger with
+       no name is worth nothing to them and would quietly inflate what DASH is
+       owed. Dropped silently rather than failing the booking: a ride must
+       never be lost over a missing middle name.
+
+       ⛔ Capped at 2. A moto carries a driver and at most two passengers in
+       practice, and an unbounded list is a free way to make the platform owe
+       DASH any number it likes. */
+    const EXTRA_MAX = 2;
+    const extraPax = (Array.isArray(req.body.extra_passengers)
+      ? req.body.extra_passengers : [])
+      .map(p => ({
+        name: String((p && p.name) || '').trim().slice(0, 120),
+        phone: String((p && p.phone) || '').trim().slice(0, 40)
+      }))
+      .filter(p => p.name && p.phone.replace(/\D/g, '').length >= 8)
+      .slice(0, EXTRA_MAX);
+
     // Delegation validation
     const delegated = is_delegated === true;
     if (delegated && (!passenger_name || !passenger_phone)) {
@@ -332,6 +357,31 @@ router.post('/request', async (req, res) => {
       }
     }
 
+    /* The extra passengers, once the ride they belong to exists.
+       ⛔ coverage_active stays FALSE here. It is set in one place only -
+       services/payments.js, when the gateway confirms the money. Registered
+       is not covered. */
+    if (extraPax.length) {
+      const per = pricing.calculateExtraPassenger(config);
+      for (const p of extraPax) {
+        try {
+          await pool.query(
+            `INSERT INTO ride_extra_passengers
+               (ride_id, name, phone, phone_key, fee, dash_fee, driver_fee, msouwout_fee)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [rideId, p.name, p.phone,
+             p.phone.replace(/\D/g, '').slice(-8),
+             per.fee, per.dash_fee, per.driver_fee, per.msouwout_fee]);
+        } catch (e) {
+          /* One bad row must not lose the ride. It is logged loudly because a
+             passenger who thinks they are covered and is not is the exact
+             failure this feature exists to prevent. */
+          console.error('[DASH] could not register extra passenger on ' +
+                        trackingCode + ': ' + e.message);
+        }
+      }
+    }
+
     async function insertRide() {
     return pool.query(
       `INSERT INTO ride_requests
@@ -383,6 +433,16 @@ router.post('/request', async (req, res) => {
     response.msouwout_medical_fee = msouwoutMedicalFee;
     response.driver_dash_share = driverDashShare;
     response.total_with_protection = totalWithProtection;
+    /* So the confirmation screen can say who is covered and for how much,
+       instead of the passenger having to trust that the 50 did something. */
+    if (extraPax.length) {
+      const per = pricing.calculateExtraPassenger(config);
+      response.extra_passengers = extraPax.map(p => ({
+        name: p.name, phone: p.phone,
+        fee: per.fee, dash_fee: per.dash_fee,
+        coverage_active: false            /* until the gateway confirms */
+      }));
+    }
 
     if (delegated) {
       response.is_delegated = true;
@@ -559,6 +619,25 @@ router.get('/dash/summary', async (req, res) => {
                  services/pricing.js calculateMedicalFee. */
               COALESCE(SUM(GREATEST(COALESCE(total_with_protection,0) - COALESCE(price,0), 0))
                        FILTER (WHERE ${PAID}),0)::int                      AS rider_share_collected,
+              /* Jeffery, 8 Oct: "Display the 13 HTG DASH allocation
+                 separately in our accounting and DASH reports." Its own
+                 column, never folded into the 25-pot figures above, so the
+                 partner can see the two streams apart. Only COVERED extra
+                 passengers count - a registered but unpaid one earns DASH
+                 nothing. */
+              /* ⚠️ The per-ride subquery has to sit INSIDE the aggregate.
+                 Written the other way round it references ride_requests.id in
+                 an aggregated SELECT, which Postgres rejects outright - and
+                 this endpoint is what the partner is looking at. */
+              COALESCE(SUM((SELECT COALESCE(SUM(x.dash_fee),0)
+                              FROM ride_extra_passengers x
+                             WHERE x.ride_id = ride_requests.id
+                               AND x.coverage_active = true))
+                       FILTER (WHERE ${PAID}),0)::int                      AS extra_dash,
+              COALESCE(SUM((SELECT COUNT(*) FROM ride_extra_passengers x
+                             WHERE x.ride_id = ride_requests.id
+                               AND x.coverage_active = true))
+                       FILTER (WHERE ${PAID}),0)::int                      AS extra_pax,
               COUNT(*)::int                                              AS rides_all,
               COALESCE(SUM(dash_fee),0)::int                             AS collected_all,
               MIN(completed_at) FILTER (WHERE ${PAID})                   AS first_ride,
@@ -614,7 +693,20 @@ router.get('/dash/summary', async (req, res) => {
               COALESCE(NULLIF(r.passenger_phone,''), r.customer_phone) AS passenger_phone,
               r.is_delegated, r.orderer_name, r.orderer_phone,
               d.full_name AS driver_name, d.phone AS driver_phone,
-              d.vehicle_type, d.license_plate
+              d.vehicle_type, d.license_plate,
+              /* Jeffery, 8 Oct: "Show the additional passenger's information
+                 in the DASH dashboard when an incident occurs." Everyone on
+                 the vehicle, in one row, so nobody is missed at the scene.
+                 ⛔ Only the covered ones - an unpaid extra passenger is not
+                 DASH's to treat and must not be presented as if they were. */
+              COALESCE((SELECT json_agg(json_build_object(
+                          'name', x.name, 'phone', x.phone,
+                          'dash_fee', x.dash_fee,
+                          'covered', x.coverage_active)
+                          ORDER BY x.created_at)
+                          FROM ride_extra_passengers x
+                         WHERE x.ride_id = r.id
+                           AND x.coverage_active = true), '[]'::json) AS extra_pax
          FROM ride_requests r
          LEFT JOIN drivers d ON r.driver_id = d.id
         WHERE r.safety_state IS NOT NULL AND r.safety_state <> ''
@@ -640,7 +732,11 @@ router.get('/dash/summary', async (req, res) => {
       ordered_by: r.is_delegated
         ? { name: r.orderer_name || '', phone: r.orderer_phone || '' } : null,
       driver: { name: r.driver_name || '', phone: r.driver_phone || '',
-                vehicle: r.vehicle_type || '', plate: r.license_plate || '' }
+                vehicle: r.vehicle_type || '', plate: r.license_plate || '' },
+      /* Jeffery: "The DASH dashboard must distinguish between the original
+         passenger and additional shared-ride passengers." They are a separate
+         list, never merged into `passenger`. */
+      extra_passengers: Array.isArray(r.extra_pax) ? r.extra_pax : []
     }));
     const emergencies = incRows.filter(r => r.level === 'emergency').length;
 
@@ -659,6 +755,15 @@ router.get('/dash/summary', async (req, res) => {
       pot: t.pot,
       rider_share_collected: riderPaid,
       driver_share_collected: driverPaid,
+      /* The shared-moto stream, kept apart from the 25-pot figures above on
+         purpose - "Display the 13 HTG DASH allocation separately". */
+      extra_passengers: t.extra_pax,
+      extra_passenger_dash: t.extra_dash,
+      extra_passenger_rate: { fee: 50, dash: 13, driver: 27, msouwout: 10 },
+      /* What DASH is actually owed in total: the pots plus the shared-ride
+         allocations. Returned ready-added so nobody has to do it in a meeting
+         and get it wrong. */
+      owed_total: t.collected + t.extra_dash,
       /* Per-ride, so the partner can check the arithmetic in one line. */
       per_ride: { pot: 25, rider: 13, driver: 12, dash: 20, msouwout: 5 },
       /* 🔑 Does the money add up? Returned rather than asserted, so a future
