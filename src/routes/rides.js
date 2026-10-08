@@ -766,7 +766,26 @@ router.get('/dash/summary', async (req, res) => {
          purpose - "Display the 13 HTG DASH allocation separately". */
       extra_passengers: t.extra_pax,
       extra_passenger_dash: t.extra_dash,
-      extra_passenger_rate: { fee: 50, dash: 13, driver: 27, msouwout: 10 },
+      /* 🚨 ONE RATE WAS A LIE THE MOMENT CARS WENT LIVE. This published the
+         moto figures only - 50/13/27/10 - while a car passenger is 75 and
+         splits 13/15/47. A partner reading one number and settling against
+         another is the exact mistake the "25 HTG/course" tile made. Both are
+         published, derived from pricing so they cannot drift. The 13 is the
+         same for both, which is the number DASH actually cares about. */
+      extra_passenger_rate: (() => {
+        const m = pricing.calculateExtraPassenger(null, 'moto');
+        const c = pricing.calculateExtraPassenger(null, 'car');
+        return {
+          dash: m.dash_fee,                     /* 13, whichever the vehicle */
+          moto: { fee: m.fee, dash: m.dash_fee, driver: m.driver_fee,
+                  msouwout: m.msouwout_fee, max_extra: m.max, active: m.configured },
+          car:  { fee: c.fee, dash: c.dash_fee, driver: c.driver_fee,
+                  msouwout: c.msouwout_fee, max_extra: c.max, active: c.configured },
+          /* kept so an older copy of the portal page still reads something
+             sensible rather than undefined */
+          fee: m.fee, driver: m.driver_fee, msouwout: m.msouwout_fee
+        };
+      })(),
       /* What DASH is actually owed in total: the pots plus the shared-ride
          allocations. Returned ready-added so nobody has to do it in a meeting
          and get it wrong. */
