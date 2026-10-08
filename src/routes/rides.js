@@ -588,9 +588,61 @@ router.get('/dash/summary', async (req, res) => {
           AND LOWER(COALESCE(payment_status,'')) = 'paid'
         ORDER BY completed_at DESC LIMIT 20`);
 
+    /* ═══ WHO WAS ON THE RIDE WHEN SOMETHING HAPPENED ═══════════════════
+       Jeffery, 7 Oct, relaying Dr Laroche: "They also wanna get the name of
+       drivers and passengers so they know if there is an accident."
+
+       🔑 ONLY ON RIDES WITH AN ALERT. Not a roster of everybody who has ever
+       ridden. DASH is the medical partner: an insurer sees the people on the
+       claim, not the whole customer book. Scoping it this way is what makes
+       handing over a passenger's name to a third party defensible to that
+       passenger - and widening it later is one WHERE clause, so there is no
+       reason to over-share today.
+
+       🚨 The count used to be every ride with any safety_state, and
+       safety_state is 'monitoring' as well as 'emergency'. A silent check-in
+       is not an accident. They are now counted separately, because "1
+       incident" on a partner's screen with no detail under it is exactly the
+       contradiction this endpoint existed to create: the tile said 1 while
+       the section below said "Aucun incident déclaré". */
     const incidents = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM ride_requests
-        WHERE safety_state IS NOT NULL AND safety_state <> ''`);
+      `SELECT r.tracking_code, r.safety_state, r.safety_at, r.created_at,
+              r.status, r.pickup_address, r.dropoff_address,
+              LOWER(COALESCE(r.payment_status,'')) = 'paid'        AS protection_paid,
+              COALESCE(r.medical_protection,false)                 AS protected,
+              COALESCE(NULLIF(r.passenger_name,''), r.customer_name) AS passenger_name,
+              COALESCE(NULLIF(r.passenger_phone,''), r.customer_phone) AS passenger_phone,
+              r.is_delegated, r.orderer_name, r.orderer_phone,
+              d.full_name AS driver_name, d.phone AS driver_phone,
+              d.vehicle_type, d.license_plate
+         FROM ride_requests r
+         LEFT JOIN drivers d ON r.driver_id = d.id
+        WHERE r.safety_state IS NOT NULL AND r.safety_state <> ''
+        ORDER BY COALESCE(r.safety_at, r.created_at) DESC
+        LIMIT 50`);
+
+    const incRows = incidents.rows.map(r => ({
+      tracking_code: r.tracking_code,
+      /* 'emergency' is a raised alarm. 'monitoring' is a check-in that was
+         not answered. Named rather than merged so the partner can tell a real
+         call-out from a precaution. */
+      level: r.safety_state,
+      at: r.safety_at || r.created_at,
+      ride_status: r.status,
+      protected: !!r.protected,
+      protection_paid: !!r.protection_paid,
+      pickup: r.pickup_address || '',
+      dropoff: r.dropoff_address || '',
+      passenger: { name: r.passenger_name || '', phone: r.passenger_phone || '' },
+      /* When somebody ordered the ride FOR another person, the person in the
+         ambulance is the passenger and the person to telephone is often the
+         orderer. Both, or the call goes to the wrong one. */
+      ordered_by: r.is_delegated
+        ? { name: r.orderer_name || '', phone: r.orderer_phone || '' } : null,
+      driver: { name: r.driver_name || '', phone: r.driver_phone || '',
+                vehicle: r.vehicle_type || '', plate: r.license_plate || '' }
+    }));
+    const emergencies = incRows.filter(r => r.level === 'emergency').length;
 
     const t = totals.rows[0];
     /* The driver's half is the remainder of the pot, which is also exactly
@@ -622,7 +674,12 @@ router.get('/dash/summary', async (req, res) => {
       rides_completed_unpaid: t.rides_all - t.rides,
       collected_if_unpaid_counted: t.collected_all,
       first_ride: t.first_ride, last_ride: t.last_ride,
-      incidents: incidents.rows[0].n,
+      /* Kept as the headline count the tile has always shown, but it now
+         means the same thing as the list underneath it. */
+      incidents: incRows.length,
+      emergencies: emergencies,
+      monitoring: incRows.length - emergencies,
+      incident_list: incRows,
       monthly: monthly.rows,
       recent: recent.rows,
       generated_at: new Date().toISOString()
