@@ -58,13 +58,23 @@ const DEFAULT_CONFIG = {
      for nothing. Owing DASH 13 out of a fee that was never charged would come
      straight out of the driver's pocket. One number from him switches it on. */
   extra_passenger_fee_moto: 50,
-  extra_passenger_fee_car: 0,   // ⛔ 0 = not configured; awaiting his figure
+  /* ⛔ STILL 0 ON PURPOSE. He proposed 75 (DASH 13, MsouWout 15, driver 47 -
+     which is exactly what this file produces at 75) and then said: "Please
+     wait for my final confirmation of the 75 HTG price before activating car
+     sharing." So it stays off until he confirms. One number here. */
+  extra_passenger_fee_car: 0,   // ⛔ proposed 75, awaiting his final word
   /* How many EXTRA people may be registered beyond the one who booked.
      "Moto: one additional passenger… Cars: multiple additional passengers, up
      to the vehicle's legally permitted seating capacity." A saloon carries
      four passengers, so three beyond the booker. */
-  extra_passenger_max_moto: 1,
-  extra_passenger_max_car: 3,
+  /* 🚨 8 Oct, Jeffery: "For moto upto 3 passenger, cars upto 4 passengers."
+     Read as TOTAL people carried, not extras - which is the only reading that
+     agrees with his own line in the same breath, "Keep the limit at three
+     additional passengers" for cars. 4 total minus the one who booked = 3
+     extra; 3 total on a moto = 2 extra. Said out loud to him so he can
+     correct it if he meant three EXTRA on a motorbike. */
+  extra_passenger_max_moto: 2,   // 3 people on the bike in total
+  extra_passenger_max_car: 3,    // 4 people in the car in total
   extra_passenger_dash: 13,     // moved from the driver's share to DASH
   dash_msouwout_share: 0.20,    // MsouWout cut of the 25 HTG DASH pot (→ 5); rest (20) to DASH fund
   road_factor: 1.30,            // straight-line → road distance factor

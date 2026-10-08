@@ -46,12 +46,70 @@ const POLL_EVERY_MS = 30 * 1000;
    Each provider implements create() and verify(). Keep them dumb: they talk to
    their gateway and normalise the answer. They do not touch the database.
 
-   Stripe is deliberately NOT stubbed here. A provider that exists but cannot
-   take money would surface as a payment option that silently fails — the same
-   trap as a "coming soon" card left in front of a live feature. It gets added
-   the day the account and keys are real, and not before.
+   Stripe was deliberately NOT stubbed here, because a provider that exists
+   but cannot take money surfaces as a payment option that silently fails. It
+   is real now - added 8 Oct with the same restricted key and the same amount
+   check that already carry cards on Tike Lakay - and it still offers no
+   method at all unless the key is set.
    ------------------------------------------------------------------------- */
+const stripe = require('./stripe');
+
 const PROVIDERS = {
+  /* ═══ CARDS ════════════════════════════════════════════════════════════
+     Jeffery, 8 Oct: "Proceed with integrating Stripe card payments into
+     MsouWout. Keep MonCash and NatCash available, and maintain server-side
+     payment confirmation before starting any ride."
+
+     The comment below used to say Stripe was deliberately not stubbed because
+     a provider that cannot take money is a trap. That was right, and it is
+     why this one is real: same service, same restricted key and the same
+     amount check already carrying card payments on Tike Lakay.
+
+     🔑 It appears in `methods` only when the key is actually set. With no key
+     the card button never reaches the payment screen at all, rather than
+     appearing and failing - which is the trap the old comment described. */
+  stripe: {
+    name: 'stripe',
+    get methods() { return stripe.configured() ? ['card'] : []; },
+
+    async create({ reference_id, amount, return_url, payer_phone }) {
+      const sess = await stripe.createCheckout({
+        amount, currency: 'HTG',
+        label: 'MsouWout — kous ' + reference_id,
+        reference: reference_id,
+        successUrl: return_url,
+        cancelUrl: return_url,
+        metadata: { platform: 'msouwout', phone: String(payer_phone || '') }
+      });
+      if (!sess.ok) return { ok: false, error: sess.error || 'Stripe refused', raw: sess.raw || {} };
+      return { ok: true, payment_url: sess.url, provider_ref: sess.id, raw: sess.raw || {} };
+    },
+
+    /* 🚨 NEEDS THE SESSION ID AND THE AMOUNT, which is why verify() is now
+       given the whole payment row rather than just our reference. Stripe
+       cannot be asked "was reference X paid"; it is asked about a session,
+       and the answer has to be checked against what we charged. A session
+       completed for a different figure is not this ride being paid for. */
+    async verify({ provider_ref, amount }) {
+      if (!provider_ref) {
+        return { ok: false, error: 'no Stripe session recorded for this payment' };
+      }
+      const out = await stripe.confirmCheckout(provider_ref, amount, 'HTG');
+      if (!out.ok) return { ok: false, error: out.error || 'Stripe unreachable', raw: out.raw || {} };
+      if (out.stripe_paid && !out.amount_matches) {
+        /* ⛔ NOT an error and NOT a payment. Left pending and logged loudly,
+           exactly as the ticket flow does, so a wrong amount can never start
+           a ride. */
+        console.error('[STRIPE] ' + provider_ref + ' was paid for ' + out.amount_total +
+          ' ' + out.currency + ' but we charged ' + amount + ' HTG. NOT marking it paid.');
+        return { ok: true, paid: false, provider_ref,
+                 raw: Object.assign({ amount_mismatch: true }, out.raw || {}) };
+      }
+      return { ok: true, paid: out.paid, provider_ref: out.payment_intent || provider_ref,
+               amount: out.amount_total, method: 'card', raw: out.raw || {} };
+    }
+  },
+
   solutionip: {
     name: 'solutionip',
     /* Named as the gateway names them. 'all' lets the payer choose on the
@@ -301,7 +359,9 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
 
       /* She asked for a new page. Settle the old one first. */
       let settled = null;
-      try { settled = await provider.verify({ reference_id: old.reference_id }); }
+      try { settled = await provider.verify({ reference_id: old.reference_id,
+                                              provider_ref: old.provider_ref,
+                                              amount: old.amount }); }
       catch (e) { settled = null; }
       if (settled && settled.ok && settled.paid) {
         await pool.query(
@@ -395,7 +455,12 @@ async function checkPayment(payment) {
 
   let res;
   try {
-    res = await provider.verify({ reference_id: payment.reference_id });
+    /* The whole row, not just the reference. SolutionIP reads only
+       reference_id and ignores the rest; Stripe needs the session id it gave
+       us and the amount we charged. */
+    res = await provider.verify({ reference_id: payment.reference_id,
+                                  provider_ref: payment.provider_ref,
+                                  amount: payment.amount });
   } catch (err) {
     res = { ok: false, error: String(err && err.message || err), raw: {} };
   }
