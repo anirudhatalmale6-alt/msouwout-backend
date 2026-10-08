@@ -58,22 +58,23 @@ const DEFAULT_CONFIG = {
      for nothing. Owing DASH 13 out of a fee that was never charged would come
      straight out of the driver's pocket. One number from him switches it on. */
   extra_passenger_fee_moto: 50,
-  /* ⛔ STILL 0 ON PURPOSE. He proposed 75 (DASH 13, MsouWout 15, driver 47 -
-     which is exactly what this file produces at 75) and then said: "Please
-     wait for my final confirmation of the 75 HTG price before activating car
-     sharing." So it stays off until he confirms. One number here. */
-  extra_passenger_fee_car: 0,   // ⛔ proposed 75, awaiting his final word
+  /* ✅ APPROVED 9 Oct, in his words: "I officially approve 75 HTG per
+     additional passenger: DASH 13, MsouWout 15, Driver 47." Those three are
+     not written out here - calculateExtraPassenger() derives them from this
+     fee and the ordinary commission rate, and lands on exactly 13/15/47, so
+     they cannot drift apart from the agreement. */
+  extra_passenger_fee_car: 75,
   /* How many EXTRA people may be registered beyond the one who booked.
      "Moto: one additional passenger… Cars: multiple additional passengers, up
      to the vehicle's legally permitted seating capacity." A saloon carries
      four passengers, so three beyond the booker. */
-  /* 🚨 8 Oct, Jeffery: "For moto upto 3 passenger, cars upto 4 passengers."
-     Read as TOTAL people carried, not extras - which is the only reading that
-     agrees with his own line in the same breath, "Keep the limit at three
-     additional passengers" for cars. 4 total minus the one who booked = 3
-     extra; 3 total on a moto = 2 extra. Said out loud to him so he can
-     correct it if he meant three EXTRA on a motorbike. */
-  extra_passenger_max_moto: 2,   // 3 people on the bike in total
+  /* I read "moto upto 3 passenger" as three people on the bike and said so
+     rather than guessing. He corrected it the next day: "MOTO CAPACITY is 2
+     passengers." So a moto carries two people - the one who booked and ONE
+     more - which is also the only number that is safe on a motorbike.
+     Cars: "limited to three additional passengers where the vehicle's legal
+     seating capacity permits." */
+  extra_passenger_max_moto: 1,   // 2 people on the bike in total
   extra_passenger_max_car: 3,    // 4 people in the car in total
   extra_passenger_dash: 13,     // moved from the driver's share to DASH
   dash_msouwout_share: 0.20,    // MsouWout cut of the 25 HTG DASH pot (→ 5); rest (20) to DASH fund
