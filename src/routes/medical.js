@@ -3,29 +3,64 @@ const router = express.Router();
 const pool = require('../db/pool');
 const { v4: uuidv4 } = require('uuid');
 
-// DASH emergency contact & facility data
+/* ═══ DASH's EMERGENCY CONTACT ════════════════════════════════════════════
+ *
+ * 🚨🚨 9 Oct 2026: THE FACILITY LIST THAT USED TO LIVE HERE WAS A SECOND,
+ * DIFFERENT, WRONG COPY.
+ *
+ * Jeffery, 8 Oct, about the dashboard: "The list in the app is fictif." I
+ * fixed the dashboard and moved its list into the database. This one - the
+ * one the EMERGENCY LOCATOR reads, the page somebody opens after a crash -
+ * was still hard-coded here and was worse:
+ *
+ *   - it carried three structures that are not on DASH's list at all
+ *     (Saint Esprit, Sainte Gene, DASH Centre-Ville CMC);
+ *   - it was missing five that are (OMNI Per Mariam, Ste-Cène, St James,
+ *     Sonapi, Oswald Durand);
+ *   - and it listed FOUR that DASH says are temporarily unavailable for
+ *     security reasons, with nothing to say so. The locator would happily
+ *     answer "nearest: Hôpital Jude Anne" and send an injured passenger to a
+ *     door that is shut.
+ *   - every telephone number was the DASH switchboard, not the clinic's.
+ *
+ * ⛔ The coordinates have NOT been carried over. Several were plainly
+ * approximate and one put DASH Carries near Gonaïves. A GPS pin for a
+ * hospital is not something I am prepared to invent: being confidently wrong
+ * about where a clinic is, in an emergency, is worse than saying the address.
+ * lat/lng are now a nullable column DASH can fill in from dash-clinics.html,
+ * and a structure without them is still listed - with its address and its own
+ * telephone number - just without a distance claimed for it.
+ * ═══════════════════════════════════════════════════════════════════════════ */
 const DASH_CONFIG = {
   emergency_phone: '+50933333274',
   emergency_whatsapp: '+50933333274',
   name: 'DASH Medical Assistance',
-  website: 'www.dashhaiti.org',
-  facilities: [
-    // Hospitals
-    { name: 'Hôpital Jude Anne', lat: 18.5420, lng: -72.3250, address: 'Delmas 18', phone: '+50933333274', type: 'hospital' },
-    { name: 'Hôpital St-Landry', lat: 18.5110, lng: -72.2870, address: 'Pétion-Ville, Route de Frères', phone: '+50933333274', type: 'hospital' },
-    { name: 'Hôpital Saint Esprit', lat: 18.5450, lng: -72.3180, address: 'Delmas 31', phone: '+50933333274', type: 'hospital' },
-    { name: 'Hôpital Sainte Claire', lat: 18.5455, lng: -72.3175, address: 'Delmas 31', phone: '+50933333274', type: 'hospital' },
-    { name: 'Hôpital Sainte Gene', lat: 18.5130, lng: -72.2850, address: 'Route de Frères', phone: '+50933333274', type: 'hospital' },
-    { name: 'Hôpital Mont-Carmel', lat: 18.5095, lng: -72.2920, address: 'Pétion-Ville, Bois Verna', phone: '+50933333274', type: 'hospital' },
-    { name: 'Hôpital Christ du Nord', lat: 19.7590, lng: -72.2010, address: 'Cap-Haïtien', phone: '+50933333274', type: 'hospital' },
-    // DASH Clinics & Centers
-    { name: 'La Croix Dieu', lat: 18.5520, lng: -72.3080, address: 'Delmas 48', phone: '+50933333274', type: 'clinic' },
-    { name: 'DASH Centre-Ville CMC', lat: 18.5430, lng: -72.3400, address: '#91 Rue Oswald Durand', phone: '+50933333274', type: 'clinic' },
-    { name: 'DASH Tabarre', lat: 18.5580, lng: -72.2780, address: 'Route de Santo, Tabarre', phone: '+50933333274', type: 'clinic' },
-    { name: 'DASH Carries', lat: 19.4500, lng: -72.6900, address: 'Baie de Henne / Gonaïves', phone: '+50933333274', type: 'clinic' },
-    { name: 'DASH Montrouis', lat: 18.9500, lng: -72.7100, address: 'Entrée de Montrouis', phone: '+50933333274', type: 'clinic' }
-  ]
+  website: 'www.dashhaiti.org'
 };
+
+/* The structures, from the table dash-clinics.html maintains. Cached for a
+   minute: an accident report must not wait on a database round trip, and the
+   list changes a few times a year. */
+let facCache = { at: 0, rows: [] };
+async function loadFacilities() {
+  if (Date.now() - facCache.at < 60000 && facCache.rows.length) return facCache.rows;
+  const { rows } = await pool.query(
+    `SELECT name, address, phones, city, status, lat, lng
+       FROM dash_clinics ORDER BY sort_order ASC, name ASC`);
+  const out = rows.map(r => ({
+    name: r.name,
+    address: r.address || '',
+    phone: r.phones || DASH_CONFIG.emergency_phone,
+    city: r.city || '',
+    status: r.status,
+    available: r.status === 'open',
+    lat: r.lat === null ? null : Number(r.lat),
+    lng: r.lng === null ? null : Number(r.lng),
+    type: /clinique|dash /i.test(r.name) ? 'clinic' : 'hospital'
+  }));
+  if (out.length) facCache = { at: Date.now(), rows: out };
+  return out;
+}
 
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
@@ -35,25 +70,70 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function findNearestFacilities(lat, lng, limit) {
-  if (!lat || !lng) return DASH_CONFIG.facilities.slice(0, limit || 3);
-  return DASH_CONFIG.facilities
-    .map(f => ({ ...f, distance_km: parseFloat(haversineKm(lat, lng, f.lat, f.lng).toFixed(1)) }))
-    .sort((a, b) => a.distance_km - b.distance_km)
-    .slice(0, limit || 3);
+/* 🚨 ONLY STRUCTURES THAT ARE ACTUALLY OPEN can be "the nearest one". A
+   closed site is returned separately so the page can show it greyed - a
+   structure that silently disappears looks exactly like one that never
+   existed, and somebody needs to know not to drive there.
+
+   ⛔ A distance is only ever reported for a structure whose coordinates we
+   actually hold. The rest are listed after, with no distance, rather than
+   being dropped or given a made-up one. */
+async function findNearestFacilities(lat, lng, limit) {
+  const all = await loadFacilities();
+  const open = all.filter(f => f.available);
+  const n = limit || 3;
+  const haveGps = Number.isFinite(lat) && Number.isFinite(lng);
+
+  const located = open.filter(f => f.lat !== null && f.lng !== null);
+  const unlocated = open.filter(f => f.lat === null || f.lng === null);
+
+  if (!haveGps || !located.length) {
+    return open.slice(0, n).map(f => Object.assign({}, f, { distance_km: null }));
+  }
+  const ranked = located
+    .map(f => Object.assign({}, f, {
+      distance_km: parseFloat(haversineKm(lat, lng, f.lat, f.lng).toFixed(1))
+    }))
+    .sort((a, b) => a.distance_km - b.distance_km);
+  return ranked
+    .concat(unlocated.map(f => Object.assign({}, f, { distance_km: null })))
+    .slice(0, n);
 }
 
+
 // GET /api/medical/dash-info — DASH contact & facilities info (public)
-router.get('/dash-info', (req, res) => {
-  const { lat, lng } = req.query;
-  const facilities = findNearestFacilities(parseFloat(lat), parseFloat(lng), 3);
-  res.json({
-    emergency_phone: DASH_CONFIG.emergency_phone,
-    emergency_whatsapp: DASH_CONFIG.emergency_whatsapp,
-    name: DASH_CONFIG.name,
-    facilities,
-    message_ht: 'Nou regrèt aksidan ki rive a. Pou asistans medikal imedya, tanpri kontakte DASH oswa ale nan sant medikal DASH ki pi pre w la. Klike isit la pou wè direksyon ak enfòmasyon sant la.'
-  });
+router.get('/dash-info', async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
+    const all = await loadFacilities();
+    const facilities = await findNearestFacilities(lat, lng, 3);
+    res.json({
+      emergency_phone: DASH_CONFIG.emergency_phone,
+      emergency_whatsapp: DASH_CONFIG.emergency_whatsapp,
+      name: DASH_CONFIG.name,
+      facilities,
+      /* ⛔ The unavailable ones are RETURNED, not dropped. The page greys them
+         so nobody drives to a door that is shut, and nobody thinks a
+         structure they know about has quietly stopped existing. */
+      unavailable: all.filter(f => !f.available),
+      total: all.length,
+      open: all.filter(f => f.available).length,
+      /* Honest about what we know. With no GPS, or with no coordinates on
+         file, these are simply the open structures - not "the nearest". */
+      ranked_by_distance: facilities.some(f => f.distance_km !== null),
+      message_ht: 'Nou regrèt aksidan ki rive a. Pou asistans medikal imedya, tanpri kontakte DASH oswa ale nan sant medikal DASH ki pi pre w la. Klike isit la pou wè direksyon ak enfòmasyon sant la.'
+    });
+  } catch (err) {
+    /* ⛔ An empty list and a failure are not the same thing to somebody who
+       has just been in an accident. Say which, and still give them the
+       telephone number - that is the part that always works. */
+    res.status(500).json({
+      error: err.message,
+      emergency_phone: DASH_CONFIG.emergency_phone,
+      emergency_whatsapp: DASH_CONFIG.emergency_whatsapp,
+      facilities: null
+    });
+  }
 });
 
 // GET /api/medical/dashboard — Admin dashboard: total fees, DASH vs MsouWout split, settlements
@@ -295,7 +375,7 @@ router.post('/accident', async (req, res) => {
     const vehicleInfo = r.vehicle_type ? `${r.vehicle_type} - ${r.license_plate || 'N/A'}` : null;
     const gpsLat = lat || r.dropoff_lat;
     const gpsLng = lng || r.dropoff_lng;
-    const nearest = findNearestFacilities(gpsLat, gpsLng, 1);
+    const nearest = await findNearestFacilities(gpsLat, gpsLng, 1);
 
     await pool.query(
       `INSERT INTO accident_reports
@@ -317,7 +397,13 @@ router.post('/accident', async (req, res) => {
       vehicleInfo ? `Veyikil: ${vehicleInfo}` : '',
       `Pozisyon GPS: ${gpsLat}, ${gpsLng}`,
       `Lè: ${now}`,
-      nearest.length > 0 ? `Sant pi pre: ${nearest[0].name} (${nearest[0].distance_km}km)` : ''
+      /* ⛔ Never print "(nullkm)" to somebody at a crash site. The
+         distance appears only when we actually hold the coordinates. */
+      nearest.length > 0
+        ? `Sant pi pre: ${nearest[0].name}` +
+          (nearest[0].distance_km !== null ? ` (${nearest[0].distance_km}km)` : '') +
+          (nearest[0].address ? ` - ${nearest[0].address}` : '')
+        : ''
     ].filter(Boolean).join('\n');
 
     res.status(201).json({
