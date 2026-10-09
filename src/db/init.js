@@ -852,7 +852,66 @@ async function runMigrations(client) {
         CREATE INDEX IF NOT EXISTS idx_extra_pax_ride ON ride_extra_passengers (ride_id);
         CREATE INDEX IF NOT EXISTS idx_extra_pax_phone ON ride_extra_passengers (phone_key);
       `);
-      console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2).');
+
+      /* ═══ DASH's PARTNER STRUCTURES ═════════════════════════════════════
+         Jeffery, 8 Oct, after sending dashhaiti.org/nos-structures:
+         "The list in the app is fictif"; then 8 Oct: "I approve a simple
+         admin screen so authorized personnel can update clinic availability,
+         addresses, and phone numbers without modifying the code."
+
+         Until now the fourteen structures were written into the HTML, which
+         meant a clinic closing needed me. An injured passenger is sent to the
+         nearest one on this list, so "the list is out of date" is not a
+         cosmetic problem.
+
+         🔑 `status` is a word, not a boolean. DASH's own page distinguishes
+         "temporarily unavailable for security reasons" from a site that has
+         closed for good, and a passenger being directed somewhere needs to
+         know which. ⛔ A closed site is never deleted or hidden - it is shown
+         greyed, because a structure that silently disappears looks exactly
+         like one that never existed.
+
+         🔑 lat/lng are nullable. DASH's page gives addresses, not
+         coordinates; the locator falls back to the address when they are
+         missing rather than dropping the clinic. Filling them in later is an
+         edit, not a migration.                                              */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS dash_clinics (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          name VARCHAR(255) NOT NULL,
+          address VARCHAR(400) NOT NULL DEFAULT '',
+          phones VARCHAR(200) NOT NULL DEFAULT '',
+          city VARCHAR(120) NOT NULL DEFAULT '',
+          status VARCHAR(20) NOT NULL DEFAULT 'open',
+          note VARCHAR(300) NOT NULL DEFAULT '',
+          lat DOUBLE PRECISION,
+          lng DOUBLE PRECISION,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          updated_by VARCHAR(80) NOT NULL DEFAULT '',
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_dash_clinics_order ON dash_clinics (sort_order, name);
+      `);
+
+      /* The edit key DASH is given, so Dr Laroche can keep the list current
+         without the console code that opens the whole of MsouWout.
+         ⛔ Only a hash is stored. The key itself is shown once, when it is
+         minted, and cannot be read back - the same rule as the instructor
+         passwords on HaitiBiznis. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS dash_access_keys (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          label VARCHAR(80) NOT NULL DEFAULT 'clinics',
+          key_hash VARCHAR(128) NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          last_used_at TIMESTAMP WITH TIME ZONE,
+          revoked_at TIMESTAMP WITH TIME ZONE
+        );
+        CREATE INDEX IF NOT EXISTS idx_dash_keys_label ON dash_access_keys (label);
+      `);
+
+      console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2, DASH clinics).');
 }
 
 module.exports = { initDatabase };

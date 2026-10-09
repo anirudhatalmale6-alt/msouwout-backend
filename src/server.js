@@ -72,6 +72,10 @@ app.use('/api/safety', safetyRouter);
 app.use('/api/logistics', logisticsRouter);
 app.use('/api/medical', medicalRouter);
 app.use('/api/payouts', payoutsRouter);
+/* DASH's partner structures. Reading the list is public - the emergency
+   page has to work for a passenger with no key - writing takes the admin
+   secret or the key minted for DASH. See routes/dash.js. */
+app.use('/api/dash', require('./routes/dash'));
 
 // Admin dashboard route
 app.get('/admin', (req, res) => {
