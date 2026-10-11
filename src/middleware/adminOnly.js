@@ -36,6 +36,9 @@ const ADMIN_ONLY = [
      passenger whose page is broken, and who is signed in to nothing, could
      never tell us. Anchored so the POST is untouched. */
   ['GET', /^\/api\/diag\/?$/],
+  /* The simulated-ride audit log. No money in it, but it is an operations
+     record and does not belong to the public. */
+  ['GET', /^\/api\/rides\/reports\/test-log\/?$/],
   // Driver approval. The /admin/* copies of these already had adminPass on
   // them; these are the older unguarded doors to the same rows.
   ['PATCH', /^\/api\/drivers\/[^/]+\/(approve|reject|suspend)$/],

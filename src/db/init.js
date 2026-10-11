@@ -991,6 +991,40 @@ async function runMigrations(client) {
         CREATE INDEX IF NOT EXISTS idx_client_errors_where ON client_errors (where_at);
       `);
 
+      /* ═══ WHAT THE SIMULATED RIDES ACTUALLY DID ════════════════════════
+         Jeffery, 11 Oct, point 7: "Keep an audit record of simulated rides
+         and their results, even when temporary test rides are deleted,
+         without including them in real financial reports."
+
+         Right now a test run leaves no trace: every ride is deleted at the
+         end, so there is no way to answer "what did you actually run, and
+         what happened?" except by taking my word for it. Given the week we
+         have had, that is not good enough.
+
+         🔑 A SEPARATE TABLE, ON PURPOSE. It cannot appear in a financial
+         report because no money query knows it exists - the isolation is
+         structural rather than another WHERE clause somebody must remember.
+         It holds no money column at all: what happened, not what it cost. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS test_ride_log (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          ride_id UUID,
+          tracking_code VARCHAR(20),
+          phone VARCHAR(50),
+          ride_type VARCHAR(20),
+          final_status VARCHAR(30),
+          payment_status VARCHAR(30),
+          payment_provider VARCHAR(30),
+          driver_phone VARCHAR(50),
+          booked_at TIMESTAMP WITH TIME ZONE,
+          completed_at TIMESTAMP WITH TIME ZONE,
+          archived_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          note VARCHAR(300) NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_test_ride_log_at ON test_ride_log (archived_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_test_ride_log_phone ON test_ride_log (phone);
+      `);
+
       console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2, DASH clinics).');
 }
 

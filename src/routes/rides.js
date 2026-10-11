@@ -59,6 +59,39 @@ router.post('/account/delete', async (req, res) => {
 
     await client.query('BEGIN');
 
+    /* ═══ ARCHIVE THE TEST RIDES BEFORE THEY GO ═════════════════════════
+       Jeffery, 11 Oct, point 7: "Keep an audit record of simulated rides and
+       their results, even when temporary test rides are deleted, without
+       including them in real financial reports."
+
+       Every test run deletes its rides at the end, which left no way to
+       answer "what did you actually run, and what happened?" except by
+       taking my word for it.
+
+       ⛔ Only is_test rides are archived. A REAL passenger deleting her
+       account is exercising a right - App Store 5.1.1(v) - and copying her
+       ride into another table while telling her it is deleted would be a lie
+       in the shape of a feature.
+       ⛔ No money column in the archive, and it lives in a table no financial
+       query knows about. */
+    try {
+      await client.query(
+        `INSERT INTO test_ride_log
+           (ride_id, tracking_code, phone, ride_type, final_status,
+            payment_status, driver_phone, booked_at, completed_at, note)
+         SELECT r.id, r.tracking_code, r.customer_phone, r.ride_type, r.status,
+                r.payment_status, d.phone, r.created_at, r.completed_at,
+                'archived on account/delete'
+           FROM ride_requests r
+           LEFT JOIN drivers d ON d.id = r.driver_id
+          WHERE r.id = ANY($1::uuid[]) AND COALESCE(r.is_test,false) = true`,
+        [ids]);
+    } catch (e) {
+      /* ⛔ Never let the archive stop a deletion. The right to erase an
+         account outranks my record-keeping. */
+      console.error('[TESTLOG] could not archive before delete:', e.message);
+    }
+
     /* 🚨 28 Sep. This was a bare DELETE, and ANY row pointing at the ride made
        it fail with "Delete failed": a safety alert, a shared family link, a GPS
        checkpoint, a message. So a passenger who had ever pressed the panic
@@ -832,6 +865,22 @@ router.get('/dash/summary', async (req, res) => {
     console.error('DASH summary error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
   }
+});
+
+/* The record of what the simulated rides did. Admin only, and gated in
+   middleware/adminOnly beside the money report. ⛔ It carries no money. */
+router.get('/reports/test-log', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const rows = await pool.query(
+      `SELECT * FROM test_ride_log ORDER BY archived_at DESC LIMIT $1`, [limit]);
+    const summary = await pool.query(
+      `SELECT final_status, COUNT(*)::int AS n
+         FROM test_ride_log
+        WHERE archived_at > NOW() - INTERVAL '30 days'
+        GROUP BY 1 ORDER BY 2 DESC`);
+    res.json({ count: rows.rows.length, last_30_days: summary.rows, rides: rows.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.get('/reports/money', async (req, res) => {
