@@ -273,7 +273,11 @@ router.patch('/admin/:id', adminPass, async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { status, verified } = req.query;
-    let query = 'SELECT id, full_name, phone, email, vehicle_type, license_plate, license_number, preferred_service, status, is_verified, is_active, created_at, reviewed_at FROM drivers';
+    /* is_test_account is SELECTED now. It was missing, so nothing looking at
+       this list could tell a reserved demo account from a real driver -
+       including the driver simulator, which must refuse to drive with a
+       real driver's identity and could not check. */
+    let query = 'SELECT id, full_name, phone, email, vehicle_type, license_plate, license_number, preferred_service, status, is_verified, is_active, is_test_account, created_at, reviewed_at FROM drivers';
     const conditions = [];
     const params = [];
 

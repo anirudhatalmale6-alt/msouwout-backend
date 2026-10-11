@@ -961,14 +961,27 @@ router.get('/available', async (req, res) => {
        street she is standing on - so the reviewer's account is shown an empty
        board rather than a list of real people. He still signs in, still has his
        completed demo history, and the app still reviews. */
+    /* ═══ 🚨 THE BOARD IS NOW SYMMETRICAL, AND IT WAS NOT BEFORE ═══════════
+       The rule above was one-directional: a demo account saw an empty board.
+       The other half was missing, and it matters now that test rides exist -
+       a REAL driver would have seen my phantom rides sitting on his board,
+       with a fare on them, and could have accepted one. Same class of mistake
+       as the push notification in services/driverAlerts.js.
+
+       So: a test account sees test rides and nothing else; a real driver sees
+       real rides and nothing else. Jeffery's rule from 28 Sep - "do not allow
+       +509 0000 0000 to receive or accept real customer rides" - is kept
+       exactly; a demo account still never meets a real passenger. It simply
+       has something to do now, which is what makes testing without Jennifer
+       possible. */
+    let boardIsTest = false;
     if (req.query.driver_id && /^[0-9a-f-]{36}$/i.test(String(req.query.driver_id))) {
       const who = await pool.query('SELECT is_test_account FROM drivers WHERE id = $1',
                                    [req.query.driver_id]);
-      if (who.rows.length && who.rows[0].is_test_account) {
-        return res.json({ rides: [], test_account: true,
-          message: 'Kont demo — pa gen kous reyèl.' });
-      }
+      boardIsTest = !!(who.rows.length && who.rows[0].is_test_account);
     }
+    params.push(boardIsTest);
+    where += ` AND COALESCE(r.is_test,false) = $${params.length}`;
     if (Number.isFinite(askedMinutes) && askedMinutes > 0 && askedMinutes < 60) {
       where += ` AND r.created_at > NOW() - INTERVAL '${Math.floor(askedMinutes)} minutes'`;
     }
@@ -1155,11 +1168,20 @@ router.patch('/:id/accept', async (req, res) => {
        real passenger must never be handed to it. Refused HERE, at the moment of
        accepting, rather than only hidden from the board: hiding is a display
        decision and this is a rule. */
-    if (driver.rows[0].is_test_account) {
-      console.warn('[DISPATCH] refused: test account ' + driver.rows[0].phone +
-                   ' tried to accept real ride ' + ride.rows[0].tracking_code);
+    /* 🚨 Matched, not blanket. A demo account may take a TEST ride - that is
+       how the whole journey gets exercised without a second human - and must
+       still never take a real one. The reverse is now refused too: a real
+       driver cannot be handed one of my phantom rides. */
+    const rideIsATest = !!ride.rows[0].is_test;
+    if (!!driver.rows[0].is_test_account !== rideIsATest) {
+      console.warn('[DISPATCH] refused: ' +
+        (driver.rows[0].is_test_account ? 'test account ' : 'real driver ') +
+        driver.rows[0].phone + ' tried to accept ' +
+        (rideIsATest ? 'a TEST ride ' : 'a real ride ') + ride.rows[0].tracking_code);
       return res.status(403).json({
-        error: 'Kont demo a pa ka pran yon kous reyèl.',
+        error: driver.rows[0].is_test_account
+          ? 'Kont demo a pa ka pran yon kous reyèl.'
+          : 'Kous sa a se yon kous tès.',
         code: 'test_account' });
     }
 
