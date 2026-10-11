@@ -32,6 +32,11 @@ function publicView(p) {
     currency: p.currency,
     method: p.method,
     provider: p.provider,
+    /* 🔑 Visible on purpose. A simulated settlement must be obvious to
+       anybody looking at the payment, not something you have to know to
+       check - "no silent failures" cuts both ways, and a payment that only
+       LOOKS real is the most expensive kind of confusion. */
+    is_test: !!p.is_test,
     payment_url: p.payment_url,
     subject_type: p.subject_type,
     subject_id: p.subject_id,
