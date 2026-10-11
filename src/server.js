@@ -76,6 +76,10 @@ app.use('/api/payouts', payoutsRouter);
    page has to work for a passenger with no key - writing takes the admin
    secret or the key minted for DASH. See routes/dash.js. */
 app.use('/api/dash', require('./routes/dash'));
+/* Where the page writes down what failed on somebody else's phone.
+   POST is public (a broken page is signed in to nothing); GET is gated in
+   middleware/adminOnly. See routes/diag.js. */
+app.use('/api/diag', require('./routes/diag'));
 
 // Admin dashboard route
 app.get('/admin', (req, res) => {

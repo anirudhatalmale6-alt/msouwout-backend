@@ -32,6 +32,10 @@ const pool = require('../db/pool');
 // here is untouched - the driver app, the passenger app and the sign-up forms
 // carry no credential and must keep working.
 const ADMIN_ONLY = [
+  /* Reading the diagnostics. ⚠️ GET only - POSTing one must stay open or a
+     passenger whose page is broken, and who is signed in to nothing, could
+     never tell us. Anchored so the POST is untouched. */
+  ['GET', /^\/api\/diag\/?$/],
   // Driver approval. The /admin/* copies of these already had adminPass on
   // them; these are the older unguarded doors to the same rows.
   ['PATCH', /^\/api\/drivers\/[^/]+\/(approve|reject|suspend)$/],

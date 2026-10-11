@@ -954,6 +954,43 @@ async function runMigrations(client) {
         CREATE INDEX IF NOT EXISTS idx_dash_keys_label ON dash_access_keys (label);
       `);
 
+      /* ═══ WHAT WENT WRONG ON SOMEBODY ELSE'S PHONE ══════════════════════
+         Jeffery, 11 Oct: "NO MORE SILENT FAILURES. When something goes wrong,
+         the system must explain the problem clearly and record enough
+         information for you to diagnose it."
+
+         Both of Jennifer's bugs this week were silent. The price never
+         appeared and nothing said why; cancel did nothing and nothing said
+         why. All either of us had was "it does not work", and I had to
+         reconstruct her network conditions to find out.
+
+         This is where the page writes down what actually failed, so the next
+         one reaches me without her having to describe it.
+
+         ⛔ WHAT IS DELIBERATELY NOT HERE: no passenger name, no address, no
+         GPS position. A diagnostic channel that quietly becomes a tracking
+         log is a different product from the one anybody agreed to. The phone
+         number is optional and is only ever what the page already had.
+         ⛔ Capped and trimmed below: an error loop on one phone must not fill
+         the database. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS client_errors (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          where_at VARCHAR(80) NOT NULL DEFAULT '',
+          message VARCHAR(500) NOT NULL DEFAULT '',
+          detail VARCHAR(2000) NOT NULL DEFAULT '',
+          tracking_code VARCHAR(20),
+          phone VARCHAR(50),
+          platform VARCHAR(30) NOT NULL DEFAULT 'msouwout',
+          app_version VARCHAR(40) NOT NULL DEFAULT '',
+          user_agent VARCHAR(300) NOT NULL DEFAULT '',
+          online BOOLEAN,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_errors_at ON client_errors (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_client_errors_where ON client_errors (where_at);
+      `);
+
       console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2, DASH clinics).');
 }
 
