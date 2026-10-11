@@ -212,6 +212,43 @@ async function runMigrations(client) {
       await client.query(`
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS ride_pin VARCHAR(4);
       `);
+
+      /* ═══ TEST RIDES ════════════════════════════════════════════════════
+         Jeffery, 9 Oct 2026: "IMPLEMENT COST-EFFECTIVE TESTING. Use simulated
+         transactions and a safe test environment to identify problems without
+         requiring us to spend money on every test… asking us to perform 10
+         consecutive real rides is not financially reasonable."
+
+         He is right, and the reason my own end-to-end runs never closed the
+         loop is written in their own comments: "the one thing this cannot do
+         is put real money through MonCash." So the only step that costs money
+         is the only step that was never covered.
+
+         A ride booked from a reserved test number carries is_test = true. It
+         goes through the REAL booking, matching, acceptance, completion and
+         payment code - the point is to exercise the real path - but the
+         payment is settled by a simulated gateway and the ride is excluded
+         from every figure that represents money owed to a real person.
+
+         🚨 THE WHOLE VALUE OF THIS COLUMN IS THAT IT IS INVISIBLE TO MONEY.
+         There are exactly three places a ride becomes money, and all three
+         exclude it:
+           1. services/earnings.js  ELIGIBLE   - no ledger rows, so no payout
+              and nothing on a driver's statement
+           2. routes/rides.js       dash/summary - not in the DASH pot, not in
+              what is owed to DASH, not on the partner's monthly statement
+           3. routes/medical.js     dashboard  - not in the medical totals
+         scripts/../test_testmode.js asserts every one of those figures is
+         byte-for-byte unchanged after a full test ride. If one moves, this is
+         not finished.
+
+         ⛔ DEFAULT false, NOT NULL. A real ride can never become a test ride
+         by omission, and an older row written before this column existed
+         counts as real - which is the safe direction. */
+      await client.query(`
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT false;
+        CREATE INDEX IF NOT EXISTS idx_rides_is_test ON ride_requests (is_test) WHERE is_test = true;
+      `);
       // Logistics module
       await client.query(`
         CREATE TABLE IF NOT EXISTS fleets (
@@ -775,6 +812,12 @@ async function runMigrations(client) {
           created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
+        /* The same flag on the payment row. A simulated settlement must be
+           distinguishable from a real one FOREVER, not only while the ride
+           it belongs to is still around. ⚠️ Added here, not beside the
+           ride_requests flag above - this table is created further down the
+           file, so altering it earlier fails on a fresh database. */
+        ALTER TABLE payments ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT false;
         CREATE INDEX IF NOT EXISTS idx_payments_subject ON payments (subject_type, subject_id);
         CREATE INDEX IF NOT EXISTS idx_payments_status  ON payments (status);
         CREATE INDEX IF NOT EXISTS idx_payments_pending ON payments (status, last_checked_at);

@@ -101,13 +101,27 @@ async function alertNewRide(ride) {
     return { sent: 0, reason: 'no_keys' };
   }
 
+  /* ═══ 🚨 A TEST RIDE MUST NEVER PAGE A REAL DRIVER ═══════════════════════
+     This line used to be one-directional: a real ride never went to a demo
+     phone. The reverse was missing, and it matters much more now that I am
+     about to run the whole journey over and over for nothing.
+
+     Without this, every single test ride sends a push notification - "🛵
+     Nouvo kous — 250 HTG" - to EVERY approved driver in Haiti. Twenty test
+     runs is twenty false alarms on every real driver's phone, for rides that
+     do not exist. That is how a platform earns a reputation for being broken,
+     and it would have been me doing it.
+
+     So the rule is symmetrical now: a real ride reaches real drivers, a test
+     ride reaches test accounts, and neither ever crosses. */
+  const wantTest = !!(ride && ride.is_test);
   const subs = await pool.query(
     `SELECT p.endpoint, p.subscription, p.failures
        FROM driver_push p
        JOIN drivers d ON d.id = p.driver_id
       WHERE d.status = 'approved' AND d.is_verified = true AND d.is_active = true
-        AND NOT COALESCE(d.is_test_account, false)   /* ⛔ never a real ride to a demo phone */
-        AND p.failures < 5`);
+        AND COALESCE(d.is_test_account, false) = $1
+        AND p.failures < 5`, [wantTest]);
   if (!subs.rows.length) return { sent: 0, reason: 'nobody_subscribed' };
 
   const body = [

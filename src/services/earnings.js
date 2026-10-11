@@ -47,7 +47,15 @@ const pool = require('../db/pool');
    while every test passed - because the stand-in database in the tests is not
    Postgres and has no opinion about ambiguity. What caught it was reading the
    service's own boot log after deploying, not the test suite. */
-const ELIGIBLE = "r.status = 'completed' AND LOWER(COALESCE(r.payment_status,'')) = 'paid'";
+/* 🚨 `NOT r.is_test` IS THE FIRST OF THE THREE PLACES A TEST RIDE IS KEPT
+   OUT OF MONEY. This one is the most important: no ledger row means no
+   entitlement, which means a test ride can never reach a driver payout or a
+   driver's earnings statement. Everything downstream reads ride_earnings, so
+   excluding it here excludes it from all of that at once.
+   ⛔ COALESCE, so a row written before the column existed counts as real -
+   the safe direction. See the note on is_test in db/init.js. */
+const ELIGIBLE = "r.status = 'completed' AND LOWER(COALESCE(r.payment_status,'')) = 'paid'"
+               + " AND COALESCE(r.is_test,false) = false";
 
 /* What each party is owed on one ride, taken from the ride's own columns.
    The arithmetic mirrors the response /complete has always returned, so the

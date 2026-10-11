@@ -133,7 +133,10 @@ async function checkRain() {
 async function getActiveRideCount() {
   try {
     const result = await pool.query(
-      `SELECT COUNT(*) FROM ride_requests WHERE status IN ('searching','accepted','in_progress') AND created_at > NOW() - INTERVAL '30 minutes'`
+      `SELECT COUNT(*) FROM ride_requests WHERE status IN ('searching','accepted','in_progress')
+         AND COALESCE(is_test,false) = false
+         AND created_at > NOW() - INTERVAL '30 minutes'`  /* 🔑 my test rides must never
+            push surge pricing up for a real customer */
     );
     return parseInt(result.rows[0].count) || 0;
   } catch (err) {

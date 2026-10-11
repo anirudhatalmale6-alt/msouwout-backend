@@ -36,6 +36,7 @@ router.use((req, res, next) => {
 });
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
+const { rideIsTest } = require('../services/testmode');
 const pricing = require('../services/pricing');
 const earnings = require('../services/earnings');
 const dispatch = require('../services/dispatch');
@@ -399,9 +400,10 @@ router.post('/request', async (req, res) => {
         medical_protection, medical_fee, dash_fee, msouwout_medical_fee, driver_dash_share, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
         pickup_address, dropoff_address, owner_token, client_request_id,
+        is_test,
         created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,NOW())`,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
@@ -411,7 +413,11 @@ router.post('/request', async (req, res) => {
        delegated, delegated ? (orderer_name || customer_name || 'Kliyan') : null,
        delegated ? (orderer_phone || customer_phone) : null,
        delegated ? passenger_name : null, delegated ? passenger_phone : null,
-       from.address, to.address, ownerToken, clientReqId]
+       from.address, to.address, ownerToken, clientReqId,
+       /* 🔑 Decided from the PHONE NUMBER, never from anything the caller
+          sends. A real customer cannot book a free ride. See
+          services/testmode.js. */
+       rideIsTest(req.body)]
     );
     }
 
@@ -484,7 +490,10 @@ router.post('/request', async (req, res) => {
        system of record; this only means he does not have to be staring at it. */
     alerts.alertNewRide({
       id: rideId, tracking_code: trackingCode, price: finalPrice,
-      pickup_address: from.address, dropoff_address: to.address
+      pickup_address: from.address, dropoff_address: to.address,
+      /* 🚨 Without this, every test ride pushes "Nouvo kous" to every real
+         driver in Haiti. See the note in services/driverAlerts.js. */
+      is_test: rideIsTest(req.body)
     }).catch(e => console.error('[ALERTS] could not notify drivers:', e.message));
 
     res.locals.sendOwnerToken = true;      // creating the ride: she must receive it
@@ -650,7 +659,9 @@ router.get('/dash/summary', async (req, res) => {
               MIN(completed_at) FILTER (WHERE ${PAID})                   AS first_ride,
               MAX(completed_at) FILTER (WHERE ${PAID})                   AS last_ride
          FROM ride_requests
-        WHERE status='completed' AND COALESCE(medical_protection,false)=true`);
+        WHERE status='completed' AND COALESCE(medical_protection,false)=true
+          /* 🚨 A test ride is not money. See db/init.js. */
+          AND COALESCE(is_test,false) = false`);
 
     const monthly = await pool.query(
       `SELECT to_char(date_trunc('month', completed_at),'YYYY-MM') AS period,
@@ -663,6 +674,7 @@ router.get('/dash/summary', async (req, res) => {
          FROM ride_requests
         WHERE status='completed' AND COALESCE(medical_protection,false)=true
           AND LOWER(COALESCE(payment_status,'')) = 'paid'
+          AND COALESCE(is_test,false) = false
         GROUP BY 1 ORDER BY 1 DESC LIMIT 24`);
 
     /* Reference code and amount only - enough to tie a transfer to a ride. */
@@ -672,6 +684,7 @@ router.get('/dash/summary', async (req, res) => {
          FROM ride_requests
         WHERE status='completed' AND COALESCE(medical_protection,false)=true
           AND LOWER(COALESCE(payment_status,'')) = 'paid'
+          AND COALESCE(is_test,false) = false
         ORDER BY completed_at DESC LIMIT 20`);
 
     /* ═══ WHO WAS ON THE RIDE WHEN SOMETHING HAPPENED ═══════════════════
@@ -842,7 +855,10 @@ router.get('/reports/money', async (req, res) => {
          COALESCE(SUM(platform_fee + COALESCE(msouwout_medical_fee,0)),0) AS msouwout_revenue,
          COALESCE(SUM(total_with_protection),0)                     AS rider_collected
        FROM ride_requests
-       WHERE status = 'completed' AND completed_at >= $1 AND completed_at <= $2`,
+       /* 🚨 The money report. A test ride here becomes a figure somebody
+          reconciles a bank transfer against. See db/init.js. */
+       WHERE status = 'completed' AND COALESCE(is_test,false) = false
+         AND completed_at >= $1 AND completed_at <= $2`,
       [from.toISOString(), to.toISOString()]
     );
 
@@ -850,7 +866,8 @@ router.get('/reports/money', async (req, res) => {
     const cancels = await pool.query(
       `SELECT COUNT(*) AS cancelled, COALESCE(SUM(COALESCE(cancel_fee,0)),0) AS cancel_fees
        FROM ride_requests
-       WHERE status = 'cancelled' AND updated_at >= $1 AND updated_at <= $2`,
+       WHERE status = 'cancelled' AND COALESCE(is_test,false) = false
+         AND updated_at >= $1 AND updated_at <= $2`,
       [from.toISOString(), to.toISOString()]
     );
 
@@ -863,7 +880,8 @@ router.get('/reports/money', async (req, res) => {
          COALESCE(SUM(dash_fee),0)                              AS dash_fund,
          COALESCE(SUM(platform_fee + COALESCE(msouwout_medical_fee,0)),0) AS msouwout_revenue
        FROM ride_requests
-       WHERE status = 'completed' AND completed_at >= NOW() - INTERVAL '7 days'
+       WHERE status = 'completed' AND COALESCE(is_test,false) = false
+         AND completed_at >= NOW() - INTERVAL '7 days'
        GROUP BY 1 ORDER BY 1 DESC`
     );
 

@@ -203,6 +203,54 @@ const PROVIDERS = {
         raw: data
       };
     }
+  },
+
+  /* ═══ THE SIMULATED GATEWAY ════════════════════════════════════════════
+     Jeffery, 9 Oct: "Use simulated transactions and a safe test environment
+     to identify problems without requiring us to spend money on every test."
+
+     🔑 THIS IS NOT A STUB THAT SKIPS THE WORK. The whole point is that a test
+     payment travels the SAME road as a real one: the same payments row, the
+     same reference, the same checkPayment, the same applyToSubject, the same
+     ledger call. The only thing that changes is who answers "has it been
+     paid" - this object instead of SolutionIP or Stripe. Everything the money
+     path does afterwards is exercised for real, which is precisely the part
+     my earlier end-to-end runs had to skip.
+
+     ⛔ IT IS NOT IN `methods`, SO NOBODY CAN ASK FOR IT. providerForMethod()
+     can never return it and no payment screen can offer it. It is reached
+     only by startPayment deciding, from the database, that the ride being
+     paid for is a test ride. A real customer has no way to reach this code.
+
+     ⚠️ It reports paid on the FIRST check rather than instantly at creation,
+     so the pending → paid transition, the poller and the idempotent claim all
+     still happen. A payment that is born paid would prove none of that. */
+  simulated: {
+    name: 'simulated',
+    methods: [],
+
+    async create({ reference_id, amount, method, return_url }) {
+      return {
+        ok: true,
+        /* No gateway page to send anybody to. The return URL is handed back
+           unchanged so the browser flow is identical to a real payment. */
+        payment_url: return_url || null,
+        provider_ref: 'SIM-' + reference_id,
+        raw: { simulated: true, amount, method_requested: method,
+               note: 'No money moved. See services/testmode.js.' }
+      };
+    },
+
+    async verify({ reference_id, amount }) {
+      return {
+        ok: true,
+        paid: true,
+        provider_ref: 'SIM-' + reference_id,
+        amount,
+        method: 'simulated',
+        raw: { simulated: true, note: 'No money moved.' }
+      };
+    }
   }
 };
 
@@ -325,7 +373,28 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
     return { ok: false, code: 'below_minimum',
              error: `The gateway will not take less than ${MIN_HTG} HTG` };
   }
-  const provider = await providerForMethod(method);
+  /* ═══ IS THIS A TEST RIDE? ═════════════════════════════════════════════
+     🔑 ASKED OF THE DATABASE, NEVER OF THE CALLER. Nothing in the request can
+     make a payment simulated; the only thing that can is the ride already
+     being flagged, which happened at booking time from a telephone number in
+     a reserved block that cannot be dialled. So a real customer cannot get a
+     free ride, and a mistake in the browser cannot produce one either.
+     See services/testmode.js and the note on is_test in db/init.js. */
+  let isTest = false;
+  if (subject_type === 'ride' && subject_id) {
+    try {
+      const t = await pool.query(
+        'SELECT COALESCE(is_test,false) AS t FROM ride_requests WHERE id = $1',
+        [String(subject_id)]);
+      isTest = !!(t.rows[0] && t.rows[0].t);
+    } catch (e) {
+      /* ⛔ FAIL CLOSED. If we cannot tell, it is a real payment. The wrong
+         way round would be settling a real fare with nothing. */
+      isTest = false;
+    }
+  }
+
+  const provider = isTest ? PROVIDERS.simulated : await providerForMethod(method);
   if (!provider) {
     const on = (await availableMethods()).map(m => m.method);
     const known = allMethods().some(m => m.method === method);
@@ -417,14 +486,17 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
       const ins = await pool.query(
         `INSERT INTO payments (provider, reference_id, subject_type, subject_id,
                                amount, currency, method, status, payer_phone,
-                               platform, user_id, metadata)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,$11::jsonb)
+                               platform, user_id, metadata, is_test)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,$11::jsonb,$12)
          RETURNING *`,
         [provider.name, reference_id, subject_type || 'ride',
          subject_id ? String(subject_id) : null,
          amt, cur, method, payer_phone || null,
          platform || 'msouwout', user_id || null,
-         JSON.stringify(metadata || {})]
+         JSON.stringify(metadata || {}),
+         /* Marked on the payment row too, so a simulated settlement stays
+            distinguishable from a real one long after the ride is gone. */
+         isTest]
       );
       payment = ins.rows[0];
     } catch (err) {

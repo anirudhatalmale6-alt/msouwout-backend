@@ -148,7 +148,8 @@ router.get('/dashboard', async (req, res) => {
         COALESCE(SUM(msouwout_medical_fee) FILTER (WHERE medical_protection = true), 0) AS total_msouwout_fees,
         COALESCE(SUM(price), 0) AS total_ride_revenue
       FROM ride_requests
-      WHERE status = 'completed'
+      /* 🚨 A test ride is not money - the third of the three places. */
+      WHERE status = 'completed' AND COALESCE(is_test,false) = false
     `);
 
     const monthly = await pool.query(`
@@ -160,6 +161,7 @@ router.get('/dashboard', async (req, res) => {
         COALESCE(SUM(msouwout_medical_fee), 0) AS msouwout_fees
       FROM ride_requests
       WHERE medical_protection = true AND status = 'completed' AND completed_at IS NOT NULL
+        AND COALESCE(is_test,false) = false
       GROUP BY TO_CHAR(completed_at, 'YYYY-MM')
       ORDER BY month DESC
       LIMIT 12
@@ -207,6 +209,13 @@ router.get('/dashboard', async (req, res) => {
         SELECT COALESCE(SUM(dash_fee), 0) AS unsettled
         FROM ride_requests
         WHERE status = 'completed' AND medical_protection = true
+          /* 🚨 FOUND BY test_testmode.js, NOT BY READING. I believed there
+             were three money queries over ride_requests and this was a
+             fourth - "amount still to be settled with DASH". A test ride was
+             pushing it from 120 to 140, which is a figure somebody would have
+             wired money against. This is exactly why the test photographs
+             EVERY number rather than the ones I remembered. */
+          AND COALESCE(is_test,false) = false
           AND completed_at > COALESCE(
             (SELECT MAX(period_end) FROM dash_settlements WHERE status = 'completed'), '1970-01-01'::timestamptz
           )
@@ -255,6 +264,11 @@ router.post('/settlement', async (req, res) => {
              COALESCE(SUM(msouwout_medical_fee), 0) AS msouwout_total
       FROM ride_requests
       WHERE status = 'completed' AND medical_protection = true
+        /* 🚨🚨 THE MOST DANGEROUS ONE. This query decides the amount on a
+           DASH settlement - the figure that is actually transferred to the
+           partner. A test ride in here is real money paid out for a ride that
+           never happened. */
+        AND COALESCE(is_test,false) = false
         AND completed_at >= $1 AND completed_at < $2
     `, [period_start, period_end]);
 
@@ -565,7 +579,7 @@ router.get('/export', async (req, res) => {
     const result = {};
 
     if (!type || type === 'rides') {
-      const rides = await pool.query(`SELECT * FROM ride_requests WHERE medical_protection = true ${dateFilter} ORDER BY created_at DESC`);
+      const rides = await pool.query(`SELECT * FROM ride_requests WHERE medical_protection = true AND COALESCE(is_test,false) = false ${dateFilter} ORDER BY created_at DESC`);
       result.rides = rides.rows;
     }
     if (!type || type === 'settlements') {
