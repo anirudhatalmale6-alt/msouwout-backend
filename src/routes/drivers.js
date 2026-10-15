@@ -733,7 +733,16 @@ router.get('/partner-stats', async (req, res) => {
         COALESCE(d.referral_partner, 'Direct') as partner,
         COUNT(*) as total_registered,
         COUNT(*) FILTER (WHERE d.is_verified = true) as total_verified,
-        COUNT(*) FILTER (WHERE d.is_active = true AND d.status = 'approved') as active_drivers
+        COUNT(*) FILTER (WHERE d.is_active = true AND d.status = 'approved') as active_drivers,
+        /* Jeffery, 15 Oct: a driver counts toward a partner's targets only
+           once APPROVED and after at least one legitimate PAID ride. Test
+           rides and unpaid or cancelled ones qualify nobody. */
+        COUNT(*) FILTER (WHERE d.status = 'approved') as approved_drivers,
+        COUNT(*) FILTER (WHERE d.status = 'approved' AND EXISTS (
+          SELECT 1 FROM ride_requests q
+           WHERE q.driver_id = d.id AND q.status = 'completed'
+             AND q.payment_status = 'paid' AND COALESCE(q.is_test, false) = false
+        )) as qualified_drivers
       FROM drivers d${where}
       GROUP BY d.referral_partner
       ORDER BY total_registered DESC
@@ -758,6 +767,8 @@ router.get('/partner-stats', async (req, res) => {
       total_registered: parseInt(s.total_registered),
       total_verified: parseInt(s.total_verified),
       active_drivers: parseInt(s.active_drivers),
+      approved_drivers: parseInt(s.approved_drivers),
+      qualified_drivers: parseInt(s.qualified_drivers),
       total_trips: parseInt(tripMap[s.partner]?.total_trips || 0),
       total_revenue: parseInt(tripMap[s.partner]?.total_revenue || 0),
       total_platform_fee: parseInt(tripMap[s.partner]?.total_platform_fee || 0)
