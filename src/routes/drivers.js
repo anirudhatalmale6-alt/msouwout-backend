@@ -781,6 +781,25 @@ router.get('/partner-stats', async (req, res) => {
   }
 });
 
+/* ═══ PARTNER / SYNDICATE DRIVER LISTS ARE PUBLIC — SO NO FULL PHONE ═══════
+   15 Oct 2026. These two lists feed msouwout.com/partner-dashboard.html and
+   syndicate-dashboard.html, which open on a partner NAME with no password,
+   and partner names are printed in every referral link (?ref=SPAP). They
+   answered with each driver's FULL phone number and internal id to anybody
+   who asked. Found while wiring the Enterprise dashboard.
+   The pages stay open (partners use them), but what they get is cut down to
+   what a partner needs to recognise a driver: the name, and the phone as its
+   last 4 digits. The id is dropped - no page uses it, and it is the key other
+   driver routes take.                                                       */
+function maskPhone(p) {
+  const d = String(p || '').replace(/\D/g, '');
+  return d.length >= 4 ? '\u2022\u2022\u2022\u2022 ' + d.slice(-4) : '';
+}
+function publicDriverRow(row) {
+  const { id, phone, ...rest } = row;
+  return Object.assign(rest, { phone: maskPhone(phone) });
+}
+
 // GET /api/drivers/partner-drivers - List drivers for a specific partner
 router.get('/partner-drivers', async (req, res) => {
   try {
@@ -799,7 +818,7 @@ router.get('/partner-drivers', async (req, res) => {
       ORDER BY d.created_at DESC
     `, [partner]);
 
-    res.json(result.rows);
+    res.json(result.rows.map(publicDriverRow));
   } catch (err) {
     console.error('Partner drivers error:', err);
     res.status(500).json({ error: 'Failed to fetch partner drivers' });
@@ -884,7 +903,7 @@ router.get('/syndicate-drivers', async (req, res) => {
       ORDER BY d.created_at DESC
     `, [syndicate]);
 
-    res.json(result.rows);
+    res.json(result.rows.map(publicDriverRow));
   } catch (err) {
     console.error('Syndicate drivers error:', err);
     res.status(500).json({ error: 'Failed to fetch syndicate drivers' });
