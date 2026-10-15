@@ -212,11 +212,36 @@ async function createBatch({ recipient_type = 'driver', recipient_id, note = nul
   try {
     await client.query('BEGIN');
 
-    const d = await client.query(
-      `SELECT id, full_name, phone, payout_method, payout_phone,
-              bank_name, bank_account_name, bank_account_number
-         FROM drivers WHERE id = $1`, [recipient_id]);
-    const driver = d.rows[0] || null;
+    /* 🚨 15 Oct 2026 - PAYING A PARTNER THREW 22P02.
+       This looked the recipient up in `drivers WHERE id = $1` whatever the
+       recipient was. A referral partner's ledger rows carry the partner CODE
+       ("STARFLEX"), not a driver uuid, so Postgres refused the cast and the
+       whole run failed before writing anything. The safe failure, but it
+       meant no partner could ever be paid.
+       Now the recipient is looked up by what it is: a driver by uuid, a
+       referral partner by its code in referral_partners. */
+    let driver = null;
+    if (recipient_type === 'driver') {
+      const d = await client.query(
+        `SELECT id, full_name, phone, payout_method, payout_phone,
+                bank_name, bank_account_name, bank_account_number
+           FROM drivers WHERE id = $1`, [recipient_id]);
+      driver = d.rows[0] || null;
+    } else if (recipient_type === 'referral') {
+      const pr = await client.query(
+        `SELECT code, name, contact_phone FROM referral_partners WHERE code = $1`,
+        [String(recipient_id)]);
+      if (!pr.rows.length) {
+        await client.query('ROLLBACK');
+        return { error: 'No referral partner with that code.', code: 404 };
+      }
+      const p = pr.rows[0];
+      /* A partner has no payout profile of its own yet. Its contact phone is
+         shown as the MonCash destination when there is one; otherwise the
+         payout says plainly that the details are missing, and approving it
+         is a decision for a person, not something this code assumes. */
+      driver = { full_name: p.name, phone: p.contact_phone, payout_method: 'moncash' };
+    }
 
     const held = await client.query(
       `SELECT reference, status FROM driver_payouts
@@ -224,7 +249,7 @@ async function createBatch({ recipient_type = 'driver', recipient_id, note = nul
       [String(recipient_id), IN_FLIGHT]);
     if (held.rows.length) {
       await client.query('ROLLBACK');
-      return { error: `That driver already has payout ${held.rows[0].reference} ` +
+      return { error: `That recipient already has payout ${held.rows[0].reference} ` +
                       `waiting (${held.rows[0].status}). Settle it before starting another.`,
                code: 409 };
     }
