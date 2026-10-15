@@ -2,6 +2,7 @@ const express = require('express');
 const driverAuth = require('../services/driverAuth');
 const pool = require('../db/pool');
 const router = express.Router();
+const { attachDriverAgent } = require('../services/agentReferral');
 
 // POST /api/drivers - Register a new driver (public)
 router.post('/', async (req, res) => {
@@ -57,9 +58,38 @@ router.post('/', async (req, res) => {
       console.error('Driver registration produced no row for', phone);
       return res.status(500).json({ error: 'Enskripsyon an pa anrejistre. Tanpri eseye ankò.' });
     }
+    /* WHICH AJAN, AND WHICH ORGANISATION (15 Oct 2026).
+       If an Ajan code came with the signup, record the driver against that
+       Ajan in the agent engine and keep, on the driver record, the code the
+       engine actually credits plus the Ajan's organisation. Done AFTER the
+       driver row exists and never allowed to fail the signup - see
+       services/agentReferral.js. */
+    let ajan = null;
+    if (referral_code) {
+      ajan = await attachDriverAgent({ code: referral_code, name: full_name, phone });
+      if (ajan.ok && ajan.koutyeCode) {
+        /* An Ajan who works for an organisation brings the driver to THAT
+           organisation, whatever partner was picked in the dropdown - the
+           person who actually recruited him decides. An independent Ajan
+           leaves the dropdown choice alone. */
+        const org = ajan.organization || null;
+        await pool.query(
+          `UPDATE drivers SET referral_code = $1,
+                  referral_partner = COALESCE($2, referral_partner)
+            WHERE id = $3`,
+          [ajan.koutyeCode, org, created.id]
+        ).catch(e => console.warn('[AJAN] could not store attribution on driver ' + created.id + ': ' + e.message));
+      }
+    }
+
     res.status(201).json({
       message: 'Driver registration submitted successfully. You will be contacted for verification.',
-      driver: created
+      driver: created,
+      /* So the signup screen can say "registered with Ajan X" - or say
+         nothing when there was no valid code. Never blocks anything. */
+      ajan: ajan && ajan.ok && ajan.koutyeCode
+        ? { code: ajan.koutyeCode, organization: ajan.organization || '' }
+        : null
     });
   } catch (err) {
     console.error('Error registering driver:', err);
