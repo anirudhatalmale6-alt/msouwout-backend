@@ -37,10 +37,22 @@ jobs:
               return json.loads(urllib.request.urlopen(q, timeout=60).read())
           svc = get('/services/' + SID)
           owner = svc.get('ownerId') or svc.get('service', {}).get('ownerId')
+          REQ = re.compile(r'"([A-Z]+) (\S+) HTTP/[0-9.]+" ([0-9]{3})')
+          PAT = [r'^/api/payouts', r'^/api/drivers/admin', r'^/api/drivers/stats', r'^/api/drivers/?$', r'^/api/drivers/[^/]+/(approve|reject|suspend|pin)',
+                 r'^/api/rides/reports', r'^/api/rides/earnings', r'^/api/rides/?$', r'^/api/rides/[^/]+/refund', r'^/api/payments/admin', r'^/api/medical/(dashboard|export|claims|settlement)',
+                 r'^/api/pricing', r'^/api/businesses/?($|stats|[^/]+/(approve|reject))', r'^/api/trips/[^/]+/(approve|reject)', r'^/api/logistics/.*verify', r'^/api/diag', r'^/api/admin-account', r'^/api/dash']
+          def is_admin(msg):
+              m = REQ.search(msg)
+              if not m: return False
+              path = m.group(2).split('?')[0].lower().rstrip('/') or '/'
+              return any(re.search(x, path) for x in PAT)
+          class _A:
+              search = staticmethod(is_admin)
+          ADMIN = _A()
           def fmt(t): return t.strftime('%Y-%m-%dT%H:%M:%SZ')
           end = datetime.datetime.utcnow()
           lines = []; total = 0; first = None; used_days = None
-          for days in [d for d in (DAYS, 30, 14, 7, 3, 1) if d <= DAYS] or [1]:
+          for days in [d for d in (min(DAYS, 29), 14, 7, 3, 1)]:
               start = end - datetime.timedelta(days=days); cursor = fmt(start); pages = 0; failed = False
               lines = []; total = 0; first = None
               while pages < 600:
