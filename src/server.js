@@ -18,6 +18,7 @@ const safetyRouter = require('./routes/safety');
 const logisticsRouter = require('./routes/logistics');
 const medicalRouter = require('./routes/medical');
 const payoutsRouter = require('./routes/payouts');
+const adminAccountRouter = require('./routes/adminAccount');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -72,6 +73,7 @@ app.use('/api/safety', safetyRouter);
 app.use('/api/logistics', logisticsRouter);
 app.use('/api/medical', medicalRouter);
 app.use('/api/payouts', payoutsRouter);
+app.use('/api/admin-account', adminAccountRouter);
 /* DASH's partner structures. Reading the list is public - the emergency
    page has to work for a passenger with no key - writing takes the admin
    secret or the key minted for DASH. See routes/dash.js. */

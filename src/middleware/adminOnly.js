@@ -27,6 +27,18 @@
  * the log, loudly, rather than pretending to be a lock.
  */
 const pool = require('../db/pool');
+const adminAuth = require('../services/adminAuth');
+
+/* 🛑 16 Oct 2026 - Jeffery: "temporarily restrict sensitive MsouWout
+   administrative operations, particularly driver payouts and changes to
+   banking information, until the password rotation and access review are
+   complete." Locked for EVERYBODY (admin included) until MW_MONEY_LOCK=off is
+   set on the server after his say-so. Cancelling a payout stays possible. */
+const MONEY_LOCK = [
+  ['POST', /^\/api\/payouts\/batch\/?$/],
+  ['POST', /^\/api\/payouts\/[^/]+\/(approve|paid)$/],
+  ['PUT', /^\/api\/payouts\/driver\/[^/]+\/(bank|method)$/]
+];
 
 // method + path patterns that require an administrator. Anything not listed
 // here is untouched - the driver app, the passenger app and the sign-up forms
@@ -155,20 +167,31 @@ async function storedPassword() {
   }
 }
 
+function isMoneyLocked(method, path) {
+  if (String(process.env.MW_MONEY_LOCK || '').toLowerCase() === 'off') return false;
+  const m0 = String(method || '').toUpperCase();
+  const p = normalisePath(path);
+  return MONEY_LOCK.some(function (x) { return x[0] === m0 && x[1].test(p); });
+}
+
 async function adminOnly(req, res, next) {
   const path = req.path.split('?')[0];
+  if (isMoneyLocked(req.method, path)) {
+    return res.status(423).json({ error: 'Payouts and bank details are temporarily locked for a security review.' });
+  }
   if (!isAdminOnly(req.method, path)) return next();
+  if (adminAuth.lockedOut(req)) return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
 
   const envSecret = process.env.ADMIN_SECRET || null;
   const given = req.headers['x-admin-secret'] || req.headers['x-admin-pass'] ||
     (req.body || {}).admin_pass || req.query.secret || req.query.pass || '';
 
-  if (envSecret && given && given === envSecret) return next();
+  /* 16 Oct 2026: the stored password is a salted hash now, compared in
+     constant time (services/adminAuth.js); a plain-text one no longer works. */
+  if (await adminAuth.verifyPassword(given)) { adminAuth.noteSuccess(req); return next(); }
+  if (given) adminAuth.noteFailure(req);
 
-  const dbPass = await storedPassword();
-  if (dbPass && given && given === dbPass) return next();
-
-  if (!envSecret && !dbPass) {
+  if (!envSecret) {
     console.error('ADMIN LOCKOUT: neither ADMIN_SECRET nor the stored admin ' +
       'password is set, so ' + req.method + ' ' + path + ' is being refused. ' +
       'Set one of them - this route is NOT open in the meantime.');
@@ -176,4 +199,4 @@ async function adminOnly(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized' });
 }
 
-module.exports = { adminOnly, isAdminOnly, normalisePath, ADMIN_ONLY };
+module.exports = { adminOnly, isAdminOnly, isMoneyLocked, normalisePath, ADMIN_ONLY };

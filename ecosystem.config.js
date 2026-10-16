@@ -6,7 +6,7 @@ module.exports = {
     env: {
       PORT: 8093,
       NODE_ENV: 'production',
-      ADMIN_SECRET: 'msouwout-admin-2026'
+      ADMIN_SECRET: process.env.ADMIN_SECRET   // 16 Oct 2026: never a value in the code
     }
   }]
 };

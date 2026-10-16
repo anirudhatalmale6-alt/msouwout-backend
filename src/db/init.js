@@ -853,13 +853,13 @@ async function runMigrations(client) {
                 '{"solutionip":{"enabled":true,"methods":{"moncash":true,"natcash":true,"kashpaw":true,"all":true}}}'::jsonb)
         ON CONFLICT (key) DO NOTHING;
       `);
-      // Default admin password for the driver-review dashboard. Jeffery can change it
-      // later; seeded once and never overwritten.
-      await client.query(`
-        INSERT INTO service_config (key, value)
-        VALUES ('admin_auth', '{"password":"MsouWout2026"}'::jsonb)
-        ON CONFLICT (key) DO NOTHING;
-      `);
+      /* 🛑 16 Oct 2026: NO default admin password is seeded any more. The old
+         seed put a plain-text password in this public file and it was never
+         changed. The administrator sets his own through a one-time link
+         (routes/adminAccount.js); services/adminAuth.retirePlaintext() wipes
+         any plain-text value at boot. */
+      await client.query(`UPDATE service_config SET value = '{}'::jsonb
+                           WHERE key = 'admin_auth' AND value ? 'password'`);
       /* ═══ SHARED-MOTO EXTRA PASSENGERS ═════════════════════════════════
          Dr Laroche: a moto that picks up a second passenger leaves that
          person uncovered. The booking page has offered "Pasaje anplis

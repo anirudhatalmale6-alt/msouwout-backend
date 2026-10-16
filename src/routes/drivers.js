@@ -144,17 +144,19 @@ router.post('/:id/documents', async (req, res) => {
 // ── Admin review dashboard ────────────────────────────────────────────────
 // Gated by a password stored in service_config('admin_auth'), NOT the Render
 // ADMIN_SECRET (which is unreadable). Password travels in the x-admin-pass header.
+/* 16 Oct 2026: a salted hash, constant-time, with a lockout - the plain-text
+   default that was in the public source no longer opens anything. */
+const adminAuth = require('../services/adminAuth');
 async function checkAdminPass(pass) {
-  if (!pass) return false;
-  const r = await pool.query(`SELECT value FROM service_config WHERE key = 'admin_auth'`);
-  const stored = r.rows[0] && r.rows[0].value && r.rows[0].value.password;
-  return !!stored && pass === stored;
+  return adminAuth.verifyPassword(pass);
 }
 
 async function adminPass(req, res, next) {
   try {
+    if (adminAuth.lockedOut(req)) return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
     const pass = req.headers['x-admin-pass'] || (req.body || {}).admin_pass || req.query.pass;
-    if (!(await checkAdminPass(pass))) return res.status(401).json({ error: 'Unauthorized' });
+    if (!(await checkAdminPass(pass))) { if (pass) adminAuth.noteFailure(req); return res.status(401).json({ error: 'Unauthorized' }); }
+    adminAuth.noteSuccess(req);
     next();
   } catch (err) {
     res.status(500).json({ error: 'Auth check failed' });
@@ -163,8 +165,10 @@ async function adminPass(req, res, next) {
 
 // POST /api/drivers/admin/login
 router.post('/admin/login', async (req, res) => {
+  if (adminAuth.lockedOut(req)) return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
   const ok = await checkAdminPass((req.body || {}).password);
-  if (!ok) return res.status(401).json({ error: 'Wrong password' });
+  if (!ok) { adminAuth.noteFailure(req); return res.status(401).json({ error: 'Wrong password' }); }
+  adminAuth.noteSuccess(req);
   res.json({ ok: true });
 });
 
