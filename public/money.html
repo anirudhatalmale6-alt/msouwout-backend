@@ -116,7 +116,8 @@ tbody tr{border-top:1px solid var(--line)}
 
   <div id="gate" class="gate">
     <div style="font-weight:700">Enter admin code to view</div>
-    <input id="secret" type="password" placeholder="Admin code" autocomplete="off">
+    <input id="secret" type="password" placeholder="Admin password" autocomplete="off">
+    <input id="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code from the authenticator app" style="margin-top:8px">
     <div><button class="btn" onclick="unlock()">View report</button></div>
     <div id="gateErr" class="err"></div>
   </div>
@@ -176,15 +177,27 @@ tbody tr{border-top:1px solid var(--line)}
 
 <script>
 var KEY='msw_admin_secret';
+/* 16 Oct 2026: the page keeps a 12-hour SESSION (password + authenticator
+   code), not the password, and only for this browser tab. */
+var store=window.sessionStorage;
+try{localStorage.removeItem(KEY);}catch(e){}
 function fmt(n){return (Math.round(n||0)).toLocaleString('en-US');}
 function unlock(){
   var s=document.getElementById('secret').value.trim();
-  if(!s){document.getElementById('gateErr').textContent='Enter the admin code.';return;}
-  localStorage.setItem(KEY,s);load();loadPayouts();
+  var c=(document.getElementById('otp').value||'').replace(/\s/g,'');
+  if(!s){document.getElementById('gateErr').textContent='Enter the admin password.';return;}
+  if(!c){store.setItem(KEY,s);load();loadPayouts();return;}   // the server's maintenance secret needs no code
+  fetch('/api/admin-account/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:s,code:c})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){
+      if(!x.ok||!x.d.token){document.getElementById('gateErr').textContent=(x.d&&x.d.error)||'Wrong password or code.';return;}
+      document.getElementById('secret').value='';document.getElementById('otp').value='';
+      store.setItem(KEY,x.d.token);load();loadPayouts();
+    }).catch(function(){document.getElementById('gateErr').textContent='Connection error.';});
 }
-function lock(){localStorage.removeItem(KEY);document.getElementById('dash').classList.add('hidden');document.getElementById('gate').classList.remove('hidden');document.getElementById('secret').value='';}
+function lock(){var t=store.getItem(KEY);if(t){fetch('/api/admin-account/logout',{method:'POST',headers:{'x-admin-secret':t}}).catch(function(){});}store.removeItem(KEY);document.getElementById('dash').classList.add('hidden');document.getElementById('gate').classList.remove('hidden');document.getElementById('secret').value='';}
 function load(){
-  var s=localStorage.getItem(KEY);
+  var s=store.getItem(KEY);
   if(!s){document.getElementById('dash').classList.add('hidden');document.getElementById('gate').classList.remove('hidden');return;}
   fetch('/api/rides/reports/money',{headers:{'x-admin-secret':s}}).then(function(r){
     if(r.status===401){throw new Error('Wrong admin code.');}
@@ -227,7 +240,7 @@ function load(){
    still require administrator approval"), and the reference step is what
    makes a payout impossible to make twice — the server refuses a second
    settlement and refuses a reference already used on another run. */
-function hdr(){return {'x-admin-secret':localStorage.getItem(KEY)||'','Content-Type':'application/json'};}
+function hdr(){return {'x-admin-secret':store.getItem(KEY)||'','Content-Type':'application/json'};}
 function api(url,opts){
   return fetch(url,Object.assign({headers:hdr()},opts||{})).then(function(r){
     return r.json().catch(function(){return {};}).then(function(j){
@@ -248,7 +261,7 @@ function say(id,text,good){
    ever came, and a driver started a ride and never finished it. The second one
    is also silently keeping that driver from taking any more work. */
 function loadAttention(){
-  var s=localStorage.getItem(KEY);
+  var s=store.getItem(KEY);
   var box=document.getElementById('attention'), body=document.getElementById('attentionBody');
   fetch('/api/rides/reports/attention',{headers:{'x-admin-secret':s}})
     .then(function(r){ return r.ok?r.json():null; })
@@ -371,7 +384,7 @@ function saveBank(id){
      .catch(function(e){ say('msg-'+id,e.message); });
 }
 
-if(localStorage.getItem(KEY)){load();loadPayouts();}
+if(store.getItem(KEY)){load();loadPayouts();}
 document.getElementById('secret').addEventListener('keydown',function(e){if(e.key==='Enter')unlock();});
 </script>
 </body>

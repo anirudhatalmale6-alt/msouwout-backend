@@ -75,23 +75,26 @@ jobs:
               open('/tmp/admin_lines.txt', 'w').write('')
               raise SystemExit(0)
           rows = []; scanned = 0; first = None
-          # Render's own request log, narrowed on Render's side to admin-looking paths
-          for pf in ['/api/payouts*', '/api/Payouts*', '/API/*', '/api/drivers*', '/api/Drivers*', '/api/rides/reports*', '/api/rides/earnings*', '/api/rides', '/api/rides/', '/api/payments/admin*', '/api/medical*', '/api/pricing*', '/api/businesses*', '/api/trips*', '/api/logistics*', '/api/diag*', '/api/admin-account*', '/api/dash*']:
+          REQ = re.compile(r'"([A-Z]+) (\S+) HTTP/[0-9.]+" ([0-9]{3})')
+          # app logs (one morgan line per request); Render text search narrows them, the regex below decides
+          TERMS = ['payouts', 'Payouts', 'PAYOUTS', 'drivers', 'Drivers', 'DRIVERS', 'rides/reports', 'rides/earnings', 'Rides', 'RIDES', 'GET /api/rides ', 'payments/admin', 'medical', 'pricing', 'businesses', 'trips/', 'verify', 'api/diag', 'admin-account', 'api/dash', 'ADMIN', 'Admin']
+          for term in TERMS:
               cursor = fmt(start); pages = 0
               while pages < 300:
-                  qs = urllib.parse.urlencode([('ownerId', owner), ('resource', SID), ('type', 'request'), ('path', pf), ('startTime', cursor), ('endTime', fmt(end)), ('limit', 100), ('direction', 'forward')])
+                  qs = urllib.parse.urlencode([('ownerId', owner), ('resource', SID), ('type', 'app'), ('text', term), ('startTime', cursor), ('endTime', fmt(end)), ('limit', 100), ('direction', 'forward')])
                   try:
                       d = get('/logs?' + qs)
                   except urllib.error.HTTPError as e:
-                      print('logs API error (%s): %s %s' % (pf, e.code, e.read()[:200].decode('utf8', 'replace'))); break
+                      print('logs API error (%s): %s %s' % (term, e.code, e.read()[:200].decode('utf8', 'replace'))); break
                   logs = d.get('logs', []); pages += 1
                   for l in logs:
                       scanned += 1
-                      lab = {x.get('name'): x.get('value') for x in (l.get('labels') or [])}
-                      path = lab.get('path') or ''
-                      if not is_admin(path): continue
+                      msg = l.get('message', '')
+                      m = REQ.search(msg)
+                      if not m or not is_admin(m.group(2)): continue
                       first = first or l.get('timestamp')
-                      rows.append({'t': l.get('timestamp'), 'method': lab.get('method'), 'path': path, 'status': lab.get('statusCode'), 'ip': lab.get('clientIP'), 'ua': lab.get('userAgent'), 'msg': l.get('message', '')[:300]})
+                      ip = msg.split(' ')[0]
+                      rows.append({'t': l.get('timestamp'), 'method': m.group(1), 'path': m.group(2), 'status': m.group(3), 'ip': ip, 'msg': msg[:400]})
                   if not d.get('hasMore'): break
                   cursor = d.get('nextStartTime') or (logs[-1]['timestamp'] if logs else None)
                   if not cursor: break
@@ -101,7 +104,7 @@ jobs:
               if k not in seen: seen.add(k); uniq.append(r)
           open('/tmp/admin_lines.txt', 'w').write('\n'.join(json.dumps(r) for r in uniq))
           ok = [r for r in uniq if str(r.get('status') or '').startswith('2')]
-          print('days covered:', DAYS, '| request-log entries checked:', scanned)
+          print('days covered:', DAYS, '| app-log lines checked:', scanned, '| earliest matching:', first)
           print('admin-route requests:', len(uniq), '| answered 2xx:', len(ok), '| distinct callers:', len(set(r.get('ip') for r in uniq)))
           PY
       - name: Encrypt the matching lines

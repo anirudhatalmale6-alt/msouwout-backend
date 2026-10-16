@@ -361,7 +361,25 @@ let ADMIN_SECRET = '';
   }
   ADMIN_SECRET = sessionStorage.getItem('mw_admin_secret') || '';
   if (!ADMIN_SECRET) {
-    ADMIN_SECRET = window.prompt('Admin secret:') || '';
+    /* 16 Oct 2026: password + authenticator code -> a 12-hour session, which
+       is what this tab keeps. (The server's maintenance secret, with no code,
+       still works on its own.) Synchronous on purpose: everything below this
+       line expects the credential to be there already. */
+    const pw = window.prompt('Admin password:') || '';
+    const code = pw ? (window.prompt('6-digit code from the authenticator app (leave empty for the maintenance secret):') || '').replace(/\s/g, '') : '';
+    if (pw && code) {
+      try {
+        const x = new XMLHttpRequest();
+        x.open('POST', API_BASE + '/api/admin-account/login', false);
+        x.setRequestHeader('Content-Type', 'application/json');
+        x.send(JSON.stringify({ password: pw, code: code }));
+        const d = JSON.parse(x.responseText || '{}');
+        if (x.status === 200 && d.token) ADMIN_SECRET = d.token;
+        else alert(d.error || 'Wrong password or code.');
+      } catch (e) { alert('Connection error.'); }
+    } else {
+      ADMIN_SECRET = pw;
+    }
     if (ADMIN_SECRET) sessionStorage.setItem('mw_admin_secret', ADMIN_SECRET);
   }
 })();

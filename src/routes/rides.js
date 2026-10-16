@@ -54,8 +54,42 @@ router.post('/account/delete', async (req, res) => {
     const mine = await client.query(
       'SELECT id FROM ride_requests WHERE customer_phone = $1 OR customer_phone = $2',
       [clean, phone.trim()]);
-    const ids = mine.rows.map(r => r.id);
+    let ids = mine.rows.map(r => r.id);
     if (!ids.length) return res.json({ deleted: true, rides: 0, note: 'No such account.' });
+
+    /* 🛑 16 Oct 2026 (security audit): this route needs only a phone number,
+       and deleting a ride CASCADES to the driver's earnings row - so anybody
+       who knew a passenger's number could wipe drivers' pay, payout lines,
+       refunds owed and medical claims. Now:
+         - a ride still in progress cannot be deleted from under its driver;
+         - a ride that carries MONEY (paid, earned, refund owed) is not erased
+           but ANONYMISED: her name, numbers and addresses go, the map points
+           are blurred to about 1 km, and the money record stays intact;
+         - every other ride is deleted exactly as before. */
+    const meta = await client.query(
+      `SELECT r.id, LOWER(COALESCE(r.status, '')) AS status, LOWER(COALESCE(r.payment_status, '')) AS pay,
+              COALESCE(r.refund_due, 0) AS refund_due,
+              EXISTS (SELECT 1 FROM ride_earnings e WHERE e.ride_id = r.id) AS earned
+         FROM ride_requests r WHERE r.id = ANY($1::uuid[])`, [ids]);
+    const DONE = ['completed', 'cancelled', 'expired', 'no_driver'];
+    if (meta.rows.some(r => !DONE.includes(r.status))) {
+      return res.status(409).json({ error: 'You have a ride in progress. Finish or cancel it first, then delete your account.' });
+    }
+    const money = meta.rows.filter(r => r.pay === 'paid' || r.earned || Number(r.refund_due) > 0).map(r => r.id);
+    if (money.length) {
+      await client.query(
+        `UPDATE ride_requests
+            SET customer_name = 'Deleted account', customer_phone = 'deleted',
+                passenger_name = NULL, passenger_phone = NULL, orderer_name = NULL, orderer_phone = NULL,
+                pickup_address = NULL, dropoff_address = NULL,
+                pickup_lat = ROUND(pickup_lat::numeric, 2), pickup_lng = ROUND(pickup_lng::numeric, 2),
+                dropoff_lat = ROUND(dropoff_lat::numeric, 2), dropoff_lng = ROUND(dropoff_lng::numeric, 2),
+                updated_at = NOW()
+          WHERE id = ANY($1::uuid[])`, [money]);
+      console.warn('[RIDER DELETE] anonymised ' + money.length + ' ride(s) that carry money (kept for the drivers\' pay)');
+      ids = ids.filter(id => !money.includes(id));
+      if (!ids.length) return res.json({ deleted: true, rides: 0, anonymised: money.length });
+    }
 
     await client.query('BEGIN');
 
@@ -141,7 +175,7 @@ router.post('/account/delete', async (req, res) => {
     await client.query('COMMIT');
 
     console.warn(`[RIDER DELETE] removed ${del.rowCount} ride(s); cleared ${cleared.join(', ') || 'nothing'}`);
-    res.json({ deleted: true, rides: del.rowCount, cleared });
+    res.json({ deleted: true, rides: del.rowCount, anonymised: money.length, cleared });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Rider delete error:', err);

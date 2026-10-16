@@ -39,17 +39,15 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // let everybody through on any day that variable went missing - a lock that
 // stops locking without anything looking broken. It now refuses when nothing
 // is configured, and says so in the log.
+/* 16 Oct 2026: the same check as every other admin route
+   (services/adminAuth.js): the server secret, or an admin SESSION from
+   password + authenticator code - so admin.html, which now holds a session,
+   is not refused here. Constant-time, fails closed. */
 function adminAuth(req, res, next) {
-  const secret = req.headers['x-admin-secret'] || req.query.secret;
-  if (!process.env.ADMIN_SECRET) {
-    console.error('ADMIN LOCKOUT: ADMIN_SECRET is not set, refusing ' +
-      req.method + ' ' + req.path + ' rather than letting it through.');
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  if (secret !== process.env.ADMIN_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
+  const given = req.headers['x-admin-secret'] || req.headers['x-admin-pass'] || req.query.secret;
+  require('./services/adminAuth').verifyPassword(given)
+    .then(function (ok) { return ok ? next() : res.status(401).json({ error: 'Unauthorized' }); })
+    .catch(function () { res.status(401).json({ error: 'Unauthorized' }); });
 }
 
 // Everything an administrator alone should be able to do - approving drivers

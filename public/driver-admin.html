@@ -117,6 +117,7 @@
     <h1>MsouWout Driver Review</h1>
     <p>Enter your admin password to review and approve drivers.</p>
     <input id="pass" type="password" placeholder="Admin password" autocomplete="current-password">
+    <input id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code from the authenticator app" style="margin-top:8px">
     <button class="btn-primary" id="loginBtn">Log In</button>
     <div class="err" id="loginErr"></div>
   </div>
@@ -169,18 +170,22 @@ h('#loginBtn').onclick = function(){
   var v = h('#pass').value.trim();
   if(!v){ h('#loginErr').textContent='Please enter the password.'; return; }
   h('#loginBtn').textContent='Checking…'; h('#loginBtn').disabled=true;
-  fetch(API+'/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:v})})
+  /* 16 Oct 2026: password + authenticator code -> a 12-hour session. The
+     session, not the password, is what the page keeps and sends. */
+  var code = (h('#code') ? h('#code').value : '').replace(/\s/g,'');
+  fetch('/api/admin-account/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:v,code:code})})
     .then(function(r){ return r.json().then(function(d){return {ok:r.ok,d:d};}); })
     .then(function(res){
       h('#loginBtn').textContent='Log In'; h('#loginBtn').disabled=false;
-      if(res.ok){ pass=v; sessionStorage.setItem('mw_admin_pass',v); showApp(); }
+      if(res.ok && res.d.token){ pass=res.d.token; sessionStorage.setItem('mw_admin_pass',pass); h('#pass').value=''; if(h('#code')) h('#code').value=''; showApp(); }
       else { h('#loginErr').textContent = res.d.error || 'Wrong password.'; }
     })
     .catch(function(){ h('#loginBtn').textContent='Log In'; h('#loginBtn').disabled=false; h('#loginErr').textContent='Connection error.'; });
 };
 h('#pass').addEventListener('keydown',function(e){ if(e.key==='Enter') h('#loginBtn').click(); });
+if(h('#code')) h('#code').addEventListener('keydown',function(e){ if(e.key==='Enter') h('#loginBtn').click(); });
 
-function logout(){ pass=''; sessionStorage.removeItem('mw_admin_pass'); h('#appView').style.display='none'; h('#loginView').style.display='block'; }
+function logout(){ if(pass){ fetch('/api/admin-account/logout',{method:'POST',headers:{'x-admin-pass':pass}}).catch(function(){}); } pass=''; sessionStorage.removeItem('mw_admin_pass'); h('#appView').style.display='none'; h('#loginView').style.display='block'; }
 h('#logoutBtn').onclick = logout;
 h('#refreshBtn').onclick = function(){ loadCounts(); loadList(); };
 
