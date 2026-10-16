@@ -289,14 +289,29 @@ async function refundsOwed() {
   return r.rows;
 }
 
+/* 16 Oct 2026: problems reported by a passenger or driver, waiting for a
+   person to review them. */
+async function problemsOpen() {
+  const r = await pool.query(
+    `SELECT p.id, p.tracking_code, p.reporter, p.category, p.message, p.refund_requested,
+            p.created_at, r.status AS ride_status
+       FROM ride_problems p JOIN ride_requests r ON r.id = p.ride_id
+      WHERE p.status = 'open' AND COALESCE(r.is_test, false) = false
+      ORDER BY p.created_at ASC LIMIT 200`);
+  return r.rows;
+}
+
 async function needsAttention() {
-  const [stranded, stuck, owed] = await Promise.all([paidAndStranded(), stuckInProgress(), refundsOwed()]);
+  const [stranded, stuck, owed, problems] = await Promise.all([
+    paidAndStranded(), stuckInProgress(), refundsOwed(),
+    problemsOpen().catch(function () { return []; })]);
   return {
     paid_but_no_driver: stranded,
     started_but_never_finished: stuck,
     refunds_owed: owed,
     refunds_owed_total: owed.reduce(function (s, x) { return s + (Number(x.refund_due) || 0); }, 0),
-    total: stranded.length + stuck.length + owed.length
+    problems_open: problems,
+    total: stranded.length + stuck.length + owed.length + problems.length
   };
 }
 
@@ -316,7 +331,9 @@ function startSweeper(everyMs = 5 * 60 * 1000) {
           a.started_but_never_finished.map(r =>
             r.tracking_code + ' running ' + Math.round(r.running_min / 60) + 'h').join(', ') +
           (a.refunds_owed && a.refunds_owed.length ? ' | refunds owed: ' + a.refunds_owed.map(r =>
-            r.tracking_code + ' ' + r.refund_due + ' HTG').join(', ') : ''));
+            r.tracking_code + ' ' + r.refund_due + ' HTG').join(', ') : '') +
+          (a.problems_open && a.problems_open.length ? ' | problems reported: ' + a.problems_open.map(r =>
+            r.tracking_code + ' (' + r.category + ')').join(', ') : ''));
       }
     })
     .catch(e => console.error('[DISPATCH] sweep failed (rides unaffected):', e.message));
@@ -331,6 +348,6 @@ module.exports = {
   RELEASE_ACCEPTED_AFTER_MIN,
   STUCK_IN_PROGRESS_MIN,
   coverage, waitState, expireStale, releaseAbandoned, paidAndStranded,
-  stuckInProgress, needsAttention, refundsOwed,
+  stuckInProgress, needsAttention, refundsOwed, problemsOpen,
   startSweeper, stopSweeper
 };

@@ -140,6 +140,7 @@ tbody tr{border-top:1px solid var(--line)}
       <div style="font-size:.78rem;color:#7F1D1D;margin-bottom:10px">Nothing here is decided automatically — money is involved.</div>
       <div id="attentionBody"></div>
     </div>
+    <div style="margin:-6px 0 16px;text-align:right"><button class="refresh" onclick="endRideByCode()">End an active ride…</button></div>
 
     <div class="grid">
       <div class="kpi driver"><div class="label">Driver payouts</div><div class="val" id="kDriver">—</div><div class="note">Due to drivers within 24h</div></div>
@@ -268,6 +269,46 @@ function recordRefund(id, code, due){
     .then(function(x){ alert(x.ok?'Recorded: '+code+' refunded.':(x.d.error||'Error')); loadAttention(); })
     .catch(function(){ alert('Connection error.'); });
 }
+/* 16 Oct 2026 - Jeffery's cancellation policy: a started ride cannot be
+   cancelled by the passenger; she reports a problem, and an ADMINISTRATOR
+   ends the ride and decides any refund. Nothing here sends money: a refund
+   decision only RECORDS what is owed (it then appears above as REFUND OWED),
+   and the driver's earnings are never reversed by a report. */
+function post(url,body){
+  return fetch(url,{method:'POST',headers:hdr(),body:JSON.stringify(body)})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});});
+}
+function reviewProblem(pid, code, refundAsked){
+  var a = prompt('Report on '+code+(refundAsked?' (passenger asks for a refund)':'')+
+                 '\n\nRefund amount in HTG to RECORD as owed (nothing is sent).\nLeave EMPTY or type 0 for NO refund:', '');
+  if(a===null) return;
+  var amt = Math.round(Number(String(a).trim()||'0'));
+  if(!(amt>=0)){ alert('Not a number.'); return; }
+  var note = prompt('Short note (why):','') || '';
+  post('/api/rides/problems/'+encodeURIComponent(pid)+'/review',
+       amt>0?{decision:'refund',amount:amt,note:note}:{decision:'no_refund',note:note})
+    .then(function(x){ alert(x.ok?(amt>0?amt+' HTG recorded as owed to the passenger. Driver earnings unchanged.':'Closed, no refund.'):(x.d.error||'Error')); loadAttention(); })
+    .catch(function(){ alert('Connection error.'); });
+}
+function endRide(code){
+  var how = prompt('End ride '+code+'.\nType 1 = the trip happened (closed as COMPLETED, driver keeps his earnings)\nType 2 = it should not count (closed as CANCELLED, no driver earnings)','');
+  if(how===null) return;
+  var outcome = String(how).trim()==='1'?'completed':(String(how).trim()==='2'?'cancelled':'');
+  if(!outcome){ alert('Type 1 or 2.'); return; }
+  var reason = prompt('Reason (required):',''); if(!reason||!reason.trim()) return;
+  var body={outcome:outcome,reason:reason.trim()};
+  if(outcome==='cancelled'){
+    var a = prompt('If the passenger paid: refund amount in HTG to RECORD as owed (0 = none). Nothing is sent.','0');
+    if(a===null) return; body.refund_amount=Math.round(Number(String(a).trim()||'0'));
+  }
+  post('/api/rides/'+encodeURIComponent(code)+'/admin-end',body)
+    .then(function(x){ alert(x.ok?('Ride '+code+' closed as '+x.d.status+(x.d.refund_recorded?' - '+x.d.refund_recorded+' HTG recorded as owed':'')+'.'):(x.d.error||'Error')); loadAttention(); })
+    .catch(function(){ alert('Connection error.'); });
+}
+function endRideByCode(){
+  var c = prompt('Tracking code of the ride to end (MW-...):',''); if(!c||!c.trim()) return;
+  endRide(c.trim().toUpperCase());
+}
 function loadAttention(){
   var s=store.getItem(KEY);
   var box=document.getElementById('attention'), body=document.getElementById('attentionBody');
@@ -295,7 +336,20 @@ function loadAttention(){
         h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
            '<b>'+esc(x.tracking_code)+'</b> — running '+Math.round(x.running_min/60)+' h<br>'+
            '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.driver_name||'driver')+
-           ' '+esc(x.driver_phone||'')+' — he cannot take another ride until this is closed</span></div>';
+           ' '+esc(x.driver_phone||'')+' — he cannot take another ride until this is closed</span><br>'+
+           '<button class="refresh" style="margin-top:6px" onclick="endRide(\''+esc(x.tracking_code)+'\')">End this ride…</button></div>';
+      });
+      /* 16 Oct 2026: problems reported by a passenger or a driver */
+      (d.problems_open||[]).forEach(function(x){
+        var active = ['accepted','in_progress','emergency','monitoring'].indexOf(x.ride_status)>=0;
+        h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
+           '<b>'+esc(x.tracking_code)+'</b> — PROBLEM reported by the '+(x.reporter==='driver'?'driver':'passenger')+
+           ' ('+esc(x.category)+')'+(x.refund_requested?' — <b>asks for a refund</b>':'')+
+           '<br><span style="font-size:.82rem;color:#7F1D1D">'+esc(x.message||'(no text)')+'</span>'+
+           '<br><span style="font-size:.72rem;color:#7F1D1D">ride is '+esc(x.ride_status)+' · '+esc(String(x.created_at||'').replace('T',' ').slice(0,16))+' UTC</span><br>'+
+           '<button class="refresh" style="margin-top:6px" onclick="reviewProblem('+Number(x.id)+',\''+esc(x.tracking_code)+'\','+(x.refund_requested?'true':'false')+')">Review (refund or not)…</button>'+
+           (active?' <button class="refresh" style="margin-top:6px" onclick="endRide(\''+esc(x.tracking_code)+'\')">End this ride…</button>':'')+
+           '</div>';
       });
       body.innerHTML=h;
       box.classList.remove('hidden');

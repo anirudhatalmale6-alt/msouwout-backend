@@ -240,5 +240,5 @@ module.exports = {
   verifyPassword, setPassword, retirePlaintext, passwordProblem,
   createSetupToken, setupTokenValid, useSetupToken, beginSetup,
   login, logout, sessionValid, twoFactorOn, totpMatch, hotp, b32encode, b32decode,
-  lockedOut, noteFailure, noteSuccess, sameText, MIN_LEN
+  lockedOut, noteFailure, noteSuccess, sameText, MIN_LEN, clientIp
 };

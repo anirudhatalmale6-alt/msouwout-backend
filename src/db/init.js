@@ -525,6 +525,35 @@ async function runMigrations(client) {
                status       = CASE WHEN started_at IS NOT NULL THEN 'in_progress' ELSE 'accepted' END
          WHERE status IN ('emergency', 'monitoring');
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS last_driver_id UUID;
+        /* 16 Oct 2026: "report a problem". A report is a NOTE about a ride -
+           it never changes the ride, its payment or anybody's earnings. Only
+           an administrator's review can record a refund as owed. */
+        CREATE TABLE IF NOT EXISTS ride_problems (
+          id SERIAL PRIMARY KEY,
+          ride_id UUID NOT NULL REFERENCES ride_requests(id) ON DELETE CASCADE,
+          tracking_code VARCHAR(20),
+          reporter VARCHAR(10) NOT NULL DEFAULT 'rider',
+          category VARCHAR(20) NOT NULL DEFAULT 'other',
+          message TEXT,
+          refund_requested BOOLEAN NOT NULL DEFAULT false,
+          ride_status_at_report VARCHAR(20),
+          status VARCHAR(12) NOT NULL DEFAULT 'open',
+          decision VARCHAR(12),
+          refund_amount INTEGER NOT NULL DEFAULT 0,
+          admin_note TEXT,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          reviewed_at TIMESTAMP WITH TIME ZONE
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride_problems_open ON ride_problems (status, created_at);
+        /* 16 Oct 2026: the permanent admin activity record (services/adminAudit.js).
+           Render keeps logs ~7 days; this has no expiry. Never holds a credential. */
+        CREATE TABLE IF NOT EXISTS admin_audit (
+          id BIGSERIAL PRIMARY KEY,
+          at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+          method VARCHAR(8), path VARCHAR(300), ip VARCHAR(64), user_agent VARCHAR(200),
+          cred VARCHAR(16), outcome VARCHAR(20), status INTEGER, note VARCHAR(300)
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (at);
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS released_at TIMESTAMP WITH TIME ZONE;
         /* Where to reach a driver's phone when the page is CLOSED. One row per
            browser, not per driver: a man with a phone and a tablet gets told

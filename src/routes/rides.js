@@ -653,6 +653,28 @@ router.post('/history', async (req, res) => {
  *
  * 🚨 The first list already existed and was called from nowhere at all. A
  * report nobody reads is not a report. */
+/* GET /api/rides/admin/problems?status=open - admin only (adminOnly list).
+   ⚠️ MUST stay above GET /:id, which would otherwise swallow "admin". */
+router.get('/admin/problems', async (req, res) => {
+  try {
+    const status = ['open', 'reviewed', 'all'].includes(req.query.status) ? req.query.status : 'open';
+    const q = await pool.query(
+      `SELECT p.*, r.status AS ride_status, r.payment_status, r.started_at, r.completed_at,
+              r.price, r.total_with_protection, r.refund_due, r.refund_status, r.customer_phone,
+              d.full_name AS driver_name, d.phone AS driver_phone
+         FROM ride_problems p
+         JOIN ride_requests r ON r.id = p.ride_id
+         LEFT JOIN drivers d ON d.id = r.driver_id
+        ${status === 'all' ? '' : 'WHERE p.status = $1'}
+        ORDER BY p.created_at DESC LIMIT 200`,
+      status === 'all' ? [] : [status]);
+    res.json({ problems: q.rows, count: q.rows.length });
+  } catch (err) {
+    console.error('problems list error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.get('/reports/attention', async (req, res) => {
   try {
     res.json(await dispatch.needsAttention());
@@ -1421,10 +1443,12 @@ router.patch('/:id/start', async (req, res) => {
       return res.status(403).json({ error: 'PIN pa kòrèk. Mande pasaje a pou PIN nan.', pin_required: true });
     }
 
-    await pool.query(
-      `UPDATE ride_requests SET status = 'in_progress', started_at = NOW(), updated_at = NOW() WHERE id = $1`,
+    const started = await pool.query(
+      `UPDATE ride_requests SET status = 'in_progress', started_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'accepted' RETURNING id`,
       [req.params.id]
     );
+    if (!started.rows.length) return res.status(409).json({ error: 'Kous la chanje (petèt li te anile). Rafrechi paj la.' });
     res.json({ status: 'in_progress', message: 'PIN verifye! Kous kòmanse!' });
   } catch (err) {
     console.error('Start ride error:', err);
@@ -1495,6 +1519,31 @@ router.patch('/:id/cancel', async (req, res) => {
       return res.status(400).json({ error: 'Pa ka anile kous sa' });
     }
 
+    /* 🛑 16 Oct 2026 - Jeffery's cancellation policy:
+         "Passengers may cancel before the ride starts without a cancellation
+          fee. Once a ride has started, passengers cannot cancel through the
+          normal cancellation process. Passengers must still have access to an
+          emergency or report-problem option. An administrator can terminate an
+          active ride and review any refund request."
+       Until today a passenger could cancel in the middle of the trip and be
+       owed the WHOLE fare back while the driver got nothing for the distance
+       already driven. A started ride now only ends three ways: the driver
+       completes it, an administrator ends it (POST /:id/admin-end), or the
+       sweeper flags it as stuck. The DRIVER cannot drop it either: putting a
+       ride with the passenger already in the car back on the board strands her
+       mid-trip. Both are sent to "report a problem", which a person reviews.
+       'started' = a start time exists, whatever the status says - a legacy
+       safety alert once wrote 'emergency' into status. */
+    if (r.started_at || ['in_progress', 'emergency', 'monitoring'].includes(r.status)) {
+      return res.status(409).json({
+        error: cancelledBy === 'rider'
+          ? 'Kous la deja kòmanse, ou pa ka anile l. Si gen yon pwoblèm, peze "Siyale yon pwoblèm" oswa SOS - ekip MsouWout ap egzamine l.'
+          : 'Kous la deja kòmanse, ou pa ka anile l. Peze "Siyale yon pwoblèm" - yon administratè ap fini kous la.',
+        ride_started: true,
+        report_problem: true
+      });
+    }
+
     /* 🚨 24 Sep — REASSIGNMENT. Jeffery: "If a driver cancels a prepaid ride,
        keep the payment attached to the booking and search for another verified
        driver. The passenger must not pay twice."
@@ -1507,7 +1556,7 @@ router.patch('/:id/cancel', async (req, res) => {
        recorded as before. */
     if (cancelledBy === 'driver' &&
         String(r.payment_status || '').toLowerCase() === 'paid' &&
-        ['accepted', 'in_progress'].includes(r.status)) {
+        r.status === 'accepted') {
       await pool.query(
         `UPDATE ride_requests
             SET status = 'searching', driver_id = NULL, accepted_at = NULL,
@@ -1528,18 +1577,11 @@ router.patch('/:id/cancel', async (req, res) => {
       });
     }
 
-    const config = await pricing.getPricingConfig();
-    let cancelFee = 0;
-
-    // A fee only applies when the RIDER cancels after a driver has already committed
-    // and the free grace window has elapsed.
-    if (cancelledBy === 'rider' && ['accepted', 'in_progress'].includes(r.status)) {
-      const acceptedAt = r.accepted_at ? new Date(r.accepted_at).getTime() : null;
-      const elapsedSec = acceptedAt ? (Date.now() - acceptedAt) / 1000 : Infinity;
-      if (r.status === 'in_progress' || elapsedSec > (config.cancel_grace_sec || 120)) {
-        cancelFee = config.cancel_fee || 0;
-      }
-    }
+    /* 16 Oct 2026: "Passengers may cancel before the ride starts without a
+       cancellation fee." Everything that reaches this line has NOT started (the
+       guard above), so the fee is always zero. The old grace-window fee
+       (cancel_fee in the pricing table) is no longer applied to anyone. */
+    const cancelFee = 0;
 
     /* 🛑 A ride that was ALREADY PAID for.
        Until 23 Sep a passenger could only pay once the ride had finished, so
@@ -1556,16 +1598,24 @@ router.patch('/:id/cancel', async (req, res) => {
       : Number(r.price || 0);
     const refundDue = alreadyPaid ? Math.max(0, Math.round(paidAmount - cancelFee)) : 0;
 
-    await pool.query(
+    /* Conditional: a driver pressing "start" in the same second must win, or
+       a started ride could still be cancelled by a request that read it a
+       moment earlier. */
+    const done = await pool.query(
       `UPDATE ride_requests
          SET status = 'cancelled', cancel_reason = $1, cancelled_by = $2,
              cancel_fee = $3,
              refund_due = $5,
              refund_status = CASE WHEN $5 > 0 THEN 'owed' ELSE refund_status END,
              updated_at = NOW()
-       WHERE id = $4`,
+       WHERE id = $4 AND started_at IS NULL
+         AND status NOT IN ('completed', 'cancelled', 'in_progress', 'emergency', 'monitoring')
+       RETURNING id`,
       [reason || null, cancelledBy, cancelFee, req.params.id, refundDue]
     );
+    if (!done.rows.length) {
+      return res.status(409).json({ error: 'Kous la chanje. Rafrechi paj la.', ride_changed: true });
+    }
 
     /* 🚨 28 Sep: "She cancelled it but i never received a text."
        Until now alertNewRide was the ONLY notification in the whole system -
@@ -1686,6 +1736,193 @@ router.post('/earnings/backfill', async (req, res) => {
   }
 });
 
+/* ───────────────────────────────────────────────────────────────────────────
+   16 Oct 2026 - REPORT A PROBLEM, ADMIN END, REFUND REVIEW.
+   Jeffery: "Passengers must still have access to an emergency or report-problem
+   option. An administrator can terminate an active ride and review any refund
+   request. Driver earnings must not be automatically reversed because a
+   passenger reports a problem."
+
+   ⛔ A report changes NOTHING on the ride: not its status, not its payment,
+   not the driver's earnings. It is a note for a person to read. The only
+   things that change money are an ADMIN's decisions below, and even those only
+   RECORD an obligation - no money moves (refunds are paid by hand and recorded
+   with PATCH /:id/refund, as before).
+   ─────────────────────────────────────────────────────────────────────────── */
+const PROBLEM_CATEGORIES = ['safety', 'driver', 'route', 'price', 'vehicle', 'payment', 'other'];
+const MAX_OPEN_REPORTS_PER_RIDE = 5;
+
+async function findRide(param) {
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(param);
+  const q = await pool.query(
+    `SELECT * FROM ride_requests WHERE ${isUUID ? 'id = $1' : 'tracking_code = $1'}`,
+    [isUUID ? param : String(param || '').toUpperCase()]);
+  return q.rows[0] || null;
+}
+
+router.post('/:id/report-problem', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const ride = await findRide(req.params.id);
+    if (!ride) return res.status(404).json({ error: 'Kous pa jwenn' });
+    const reporter = String(b.reporter || 'rider').toLowerCase() === 'driver' ? 'driver' : 'rider';
+    const category = PROBLEM_CATEGORIES.includes(String(b.category || '').toLowerCase())
+      ? String(b.category).toLowerCase() : 'other';
+    const message = String(b.message || '').trim().slice(0, 1000);
+    if (!message && category === 'other') {
+      return res.status(400).json({ error: 'Ekri ki pwoblèm nan.' });
+    }
+    const open = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM ride_problems WHERE ride_id = $1 AND status = 'open'`, [ride.id]);
+    if (open.rows[0].n >= MAX_OPEN_REPORTS_PER_RIDE) {
+      return res.status(429).json({ error: 'Nou deja resevwa pwoblèm ou yo. Ekip la ap egzamine yo.' });
+    }
+    const ins = await pool.query(
+      `INSERT INTO ride_problems (ride_id, tracking_code, reporter, category, message,
+                                  refund_requested, ride_status_at_report)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, created_at`,
+      [ride.id, ride.tracking_code, reporter, category, message || null,
+       !!b.refund_requested && reporter === 'rider', ride.status]);
+    console.warn(`[PROBLEM] ride ${ride.tracking_code} - ${reporter} reported "${category}"` +
+                 (b.refund_requested ? ' and asks for a refund' : '') + ' (ride unchanged)');
+    res.status(201).json({
+      ok: true, report_id: ins.rows[0].id,
+      message: reporter === 'rider'
+        ? 'Nou resevwa l. Yon moun nan ekip MsouWout ap egzamine l. Si ou an danje, sèvi ak bouton SOS la.'
+        : 'Nou resevwa l. Yon administratè ap egzamine l.'
+    });
+  } catch (err) {
+    console.error('report-problem error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+/* What was actually paid for a ride, and how much of it is already owed or
+   given back - the ceiling for any refund decision. */
+function refundRoom(r) {
+  const paid = String(r.payment_status || '').toLowerCase() === 'paid'
+    ? (Number(r.total_with_protection) > 0 ? Number(r.total_with_protection) : Number(r.price || 0)) : 0;
+  const already = Number(r.refund_due) || 0;
+  return { paid: Math.round(paid), already, room: Math.max(0, Math.round(paid - already)) };
+}
+
+/* POST /api/rides/problems/:pid/review - admin only.
+   { decision: 'refund' | 'no_refund', amount?, note? }
+   'refund' RECORDS an amount owed back to the passenger (on the money page,
+   paid by hand like every other refund). The driver's earnings are NOT
+   touched - Jeffery: "must not be automatically reversed". */
+router.post('/problems/:pid/review', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const b = req.body || {};
+    const decision = b.decision === 'refund' ? 'refund' : (b.decision === 'no_refund' ? 'no_refund' : null);
+    if (!decision) return res.status(400).json({ error: "decision must be 'refund' or 'no_refund'" });
+    await client.query('BEGIN');
+    const pq = await client.query(`SELECT * FROM ride_problems WHERE id = $1 FOR UPDATE`, [req.params.pid]);
+    if (!pq.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Report not found' }); }
+    const p = pq.rows[0];
+    if (p.status !== 'open') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This report was already reviewed' }); }
+    const rq = await client.query(`SELECT * FROM ride_requests WHERE id = $1 FOR UPDATE`, [p.ride_id]);
+    const r = rq.rows[0];
+    let amount = 0;
+    if (decision === 'refund') {
+      const room = refundRoom(r);
+      amount = Math.round(Number(b.amount));
+      if (!(amount > 0) || amount > room.room) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Refund must be between 1 and ' + room.room + ' HTG (paid ' + room.paid +
+                                     ' HTG, already owed/refunded ' + room.already + ' HTG)' });
+      }
+      if (r.refund_status === 'refunded') {
+        /* A second refund on a ride whose first one is already recorded as
+           paid: keep the record honest - the new amount is owed again. */
+      }
+      await client.query(
+        `UPDATE ride_requests
+            SET refund_due = COALESCE(refund_due, 0) + $2, refund_status = 'owed', refunded_at = NULL,
+                refund_note = TRIM(COALESCE(refund_note, '') || ' | ' || $3), updated_at = NOW()
+          WHERE id = $1`,
+        [r.id, amount, `admin approved ${amount} HTG after problem report #${p.id}` +
+                        (b.note ? ': ' + String(b.note).trim().slice(0, 300) : '')]);
+    }
+    await client.query(
+      `UPDATE ride_problems SET status = 'reviewed', decision = $2, refund_amount = $3,
+              admin_note = $4, reviewed_at = NOW() WHERE id = $1`,
+      [p.id, decision, amount, b.note ? String(b.note).trim().slice(0, 500) : null]);
+    await client.query('COMMIT');
+    console.warn(`[PROBLEM REVIEWED] ride ${p.tracking_code} report #${p.id} - ${decision}` +
+                 (amount ? ' ' + amount + ' HTG recorded as owed (nothing sent)' : '') + '; driver earnings untouched');
+    res.json({ ok: true, decision, refund_recorded: amount, driver_earnings_changed: false,
+               note: amount ? 'Recorded as owed on the money page. Nothing has been paid.' : undefined });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('problem review error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  } finally { client.release(); }
+});
+
+/* POST /api/rides/:id/admin-end - admin only.
+   { outcome: 'completed' | 'cancelled', reason, refund_amount? }
+   'completed': the ride happened (or most of it) - it is closed as finished and
+     the driver's earnings are recorded exactly as if he had pressed "complete".
+   'cancelled': the ride should not count - no driver earnings are created.
+     If it was paid, refund_amount (0..paid) is RECORDED as owed. Nothing is sent.
+   Works on an accepted or started ride; never on one already finished. */
+router.post('/:id/admin-end', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const outcome = b.outcome === 'completed' ? 'completed' : (b.outcome === 'cancelled' ? 'cancelled' : null);
+    if (!outcome) return res.status(400).json({ error: "outcome must be 'completed' or 'cancelled'" });
+    const reason = String(b.reason || '').trim().slice(0, 300);
+    if (!reason) return res.status(400).json({ error: 'A reason is required' });
+    const r = await findRide(req.params.id);
+    if (!r) return res.status(404).json({ error: 'Kous pa jwenn' });
+    if (!['accepted', 'in_progress', 'emergency', 'monitoring'].includes(r.status)) {
+      return res.status(409).json({ error: 'Only an accepted or started ride can be ended here (this one is ' + r.status + ')' });
+    }
+    if (outcome === 'completed') {
+      if (!r.started_at) return res.status(409).json({ error: 'This ride never started - end it as cancelled instead' });
+      const up = await pool.query(
+        `UPDATE ride_requests SET status = 'completed', completed_at = NOW(), updated_at = NOW(),
+                cancel_reason = $2
+          WHERE id = $1 AND status = $3 RETURNING id`,
+        [r.id, 'ended by administrator: ' + reason, r.status]);
+      if (!up.rows.length) return res.status(409).json({ error: 'The ride changed - reload' });
+      const rec = await earnings.recordForRide(r.id).catch(e => ({ error: e.message }));
+      console.warn(`[ADMIN END] ride ${r.tracking_code} closed as COMPLETED: ${reason}`);
+      return res.json({ status: 'completed', ended_by: 'admin', earnings: rec });
+    }
+    const room = refundRoom(r);
+    const refund = b.refund_amount == null || b.refund_amount === '' ? null : Math.round(Number(b.refund_amount));
+    if (room.paid > 0 && refund == null) {
+      return res.status(400).json({ error: 'This ride was paid (' + room.paid + ' HTG). Say how much is owed back: refund_amount 0 to ' + room.room });
+    }
+    if (refund != null && (!(refund >= 0) || refund > room.room)) {
+      return res.status(400).json({ error: 'refund_amount must be 0 to ' + room.room + ' HTG' });
+    }
+    const owed = refund || 0;
+    const up = await pool.query(
+      `UPDATE ride_requests
+          SET status = 'cancelled', cancelled_by = 'admin', cancel_fee = 0, cancel_reason = $2,
+              refund_due = COALESCE(refund_due, 0) + $3,
+              refund_status = CASE WHEN $3 > 0 THEN 'owed' ELSE refund_status END,
+              updated_at = NOW()
+        WHERE id = $1 AND status = $4 RETURNING id`,
+      [r.id, 'ended by administrator: ' + reason, owed, r.status]);
+    if (!up.rows.length) return res.status(409).json({ error: 'The ride changed - reload' });
+    if (r.driver_id) {
+      alerts.alertRideGone(r.driver_id, r, 'cancelled_by_admin')
+        .catch(e => console.error('[ALERTS] admin-end notice failed:', e.message));
+    }
+    console.warn(`[ADMIN END] ride ${r.tracking_code} closed as CANCELLED: ${reason}` +
+                 (owed ? ` - ${owed} HTG recorded as owed (nothing sent)` : ''));
+    res.json({ status: 'cancelled', ended_by: 'admin', refund_recorded: owed });
+  } catch (err) {
+    console.error('admin-end error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 // POST /api/rides/:id/emergency — Trigger SOS panic
 router.post('/:id/emergency', async (req, res) => {
   try {
@@ -1697,9 +1934,14 @@ router.post('/:id/emergency', async (req, res) => {
       [param]
     );
 
+    /* 🛑 16 Oct 2026: this old door still wrote 'emergency' into STATUS - the
+       exact bug that stranded MW-8EF6GP6 on 28 Sep (/complete only accepts
+       'in_progress'). Nothing in the apps calls it any more, but it is public,
+       so anybody with a tracking code could freeze a ride. Safety is a flag
+       ABOUT a ride: same column /api/safety/sos uses, status untouched. */
     if (ride.rows.length > 0) {
       await pool.query(
-        `UPDATE ride_requests SET status = 'emergency', updated_at = NOW() WHERE id = $1`,
+        `UPDATE ride_requests SET safety_state = 'emergency', safety_at = NOW(), updated_at = NOW() WHERE id = $1`,
         [ride.rows[0].id]
       );
     }

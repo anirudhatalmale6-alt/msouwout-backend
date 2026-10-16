@@ -13,6 +13,16 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../services/adminAuth');
+const audit = require('../services/adminAudit');
+/* Every event on this router goes into the permanent admin record. */
+router.use((req, res, next) => {
+  /* /activity is recorded by middleware/adminOnly.js already; the two status
+     reads are public, harmless and polled. */
+  if (/^\/activity/.test(req.path) || (req.method === 'GET' && /status/.test(req.path))) return next();
+  audit.onFinish(req, res, { ip: auth.clientIp(req), outcome: 'account:' + req.path.replace(/^\//, '').slice(0, 12),
+    cred: audit.credKind(req.headers['x-admin-secret'] || req.headers['x-admin-pass']) });
+  next();
+});
 
 router.post('/setup-link', async (req, res) => {
   const env = process.env.ADMIN_SECRET || '';
@@ -109,6 +119,13 @@ router.post('/set-password', async (req, res) => {
     console.error('set-password:', e.message);
     res.status(500).json({ error: 'Could not save the password' });
   }
+});
+
+/* GET /api/admin-account/activity?limit=100 - the permanent admin record.
+   Admin-only (middleware/adminOnly.js). */
+router.get('/activity', async (req, res) => {
+  try { res.json({ rows: await audit.recent(req.query.limit) }); }
+  catch (e) { console.error('activity:', e.message); res.status(500).json({ error: 'Could not read the record' }); }
 });
 
 module.exports = router;

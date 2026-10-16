@@ -28,6 +28,7 @@
  */
 const pool = require('../db/pool');
 const adminAuth = require('../services/adminAuth');
+const audit = require('../services/adminAudit');
 
 /* 🛑 16 Oct 2026 - Jeffery: "temporarily restrict sensitive MsouWout
    administrative operations, particularly driver payouts and changes to
@@ -68,6 +69,13 @@ const ADMIN_ONLY = [
      record that says she was paid back - so it must not be something a
      passenger can set on her own ride. */
   ['PATCH', /^\/api\/rides\/[^/]+\/refund$/],
+  /* 16 Oct 2026: ending somebody's ride, reading every problem report (with
+     phone numbers) and deciding a refund are the administrator's alone. */
+  ['POST', /^\/api\/rides\/[^/]+\/admin-end$/],
+  ['GET', /^\/api\/rides\/admin\/problems$/],
+  ['POST', /^\/api\/rides\/problems\/[^/]+\/review$/],
+  // The permanent admin activity record (who did what, from where).
+  ['GET', /^\/api\/admin-account\/activity$/],
   /* The earnings ledger: every driver's name, payout number and what he is
      owed. It moves no money, but it is the payroll - it does not belong to
      anybody but Jeffery. Anchored so they cannot be reached as a ride id. */
@@ -177,10 +185,15 @@ function isMoneyLocked(method, path) {
 async function adminOnly(req, res, next) {
   const path = req.path.split('?')[0];
   if (isMoneyLocked(req.method, path)) {
+    audit.record(req, { path, ip: adminAuth.clientIp(req), outcome: 'money-locked', status: 423,
+      cred: audit.credKind(req.headers['x-admin-secret'] || req.headers['x-admin-pass']) });
     return res.status(423).json({ error: 'Payouts and bank details are temporarily locked for a security review.' });
   }
   if (!isAdminOnly(req.method, path)) return next();
-  if (adminAuth.lockedOut(req)) return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
+  if (adminAuth.lockedOut(req)) {
+    audit.record(req, { path, ip: adminAuth.clientIp(req), outcome: 'locked-out', status: 429 });
+    return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
+  }
 
   const envSecret = process.env.ADMIN_SECRET || null;
   const given = req.headers['x-admin-secret'] || req.headers['x-admin-pass'] ||
@@ -188,8 +201,13 @@ async function adminOnly(req, res, next) {
 
   /* 16 Oct 2026: the stored password is a salted hash now, compared in
      constant time (services/adminAuth.js); a plain-text one no longer works. */
-  if (await adminAuth.verifyPassword(given)) { adminAuth.noteSuccess(req); return next(); }
+  if (await adminAuth.verifyPassword(given)) {
+    adminAuth.noteSuccess(req);
+    audit.onFinish(req, res, { path, ip: adminAuth.clientIp(req), outcome: 'allowed', cred: audit.credKind(given) });
+    return next();
+  }
   if (given) adminAuth.noteFailure(req);
+  audit.record(req, { path, ip: adminAuth.clientIp(req), outcome: 'refused', status: 401, cred: audit.credKind(given) });
 
   if (!envSecret) {
     console.error('ADMIN LOCKOUT: neither ADMIN_SECRET nor the stored admin ' +

@@ -155,8 +155,14 @@ async function adminPass(req, res, next) {
   try {
     if (adminAuth.lockedOut(req)) return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
     const pass = req.headers['x-admin-pass'] || (req.body || {}).admin_pass || req.query.pass;
-    if (!(await checkAdminPass(pass))) { if (pass) adminAuth.noteFailure(req); return res.status(401).json({ error: 'Unauthorized' }); }
+    const audit = require('../services/adminAudit');
+    if (!(await checkAdminPass(pass))) {
+      if (pass) adminAuth.noteFailure(req);
+      audit.record(req, { ip: adminAuth.clientIp(req), outcome: 'refused', status: 401, cred: audit.credKind(pass) });
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     adminAuth.noteSuccess(req);
+    audit.onFinish(req, res, { ip: adminAuth.clientIp(req), outcome: 'allowed', cred: audit.credKind(pass) });
     next();
   } catch (err) {
     res.status(500).json({ error: 'Auth check failed' });
@@ -167,6 +173,9 @@ async function adminPass(req, res, next) {
 router.post('/admin/login', async (req, res) => {
   if (adminAuth.lockedOut(req)) return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
   const ok = await checkAdminPass((req.body || {}).password);
+  const audit = require('../services/adminAudit');
+  audit.record(req, { ip: adminAuth.clientIp(req), outcome: ok ? 'login-ok' : 'login-failed', status: ok ? 200 : 401,
+    cred: audit.credKind((req.body || {}).password) });
   if (!ok) { adminAuth.noteFailure(req); return res.status(401).json({ error: 'Wrong password' }); }
   adminAuth.noteSuccess(req);
   res.json({ ok: true });
@@ -566,13 +575,46 @@ router.post('/account/delete', async (req, res) => {
      500, months later, for one unlucky driver. */
   const client = await pool.connect();
   try {
-    const { phone } = req.body;
+    const { phone, pin } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone number is required' });
-    const clean = phone.replace(/[^0-9+]/g, '');
+    const clean = String(phone).replace(/[^0-9+]/g, '');
 
     const found = await client.query(
-      'SELECT id, full_name FROM drivers WHERE phone = $1 OR phone = $2', [clean, phone.trim()]);
-    if (!found.rows.length) return res.json({ deleted: true, note: 'No such account.' });
+      `SELECT id, full_name, pin_hash, pin_attempts, pin_locked_until
+         FROM drivers WHERE phone = $1 OR phone = $2`, [clean, String(phone).trim()]);
+    /* Same answer whether or not the number exists - a different one would
+       let anybody ask "is this number a MsouWout driver?". */
+    if (!found.rows.length) {
+      return res.status(401).json({ error: 'PIN obligatwa', error_en: 'Your PIN is required.', code: 'pin_required' });
+    }
+
+    /* 🛑 16 Oct 2026 (Jeffery: "Requiring the driver's PIN before account
+       deletion"). This took a PHONE NUMBER and nothing else, so anybody who
+       knew a driver's number - it is printed on every passenger's screen -
+       could erase his account, his documents and his payout details.
+       The PIN is checked exactly like sign-in (driverAuth.checkSignIn): wrong
+       guesses count, and after 5 the account locks.
+       ⛔ A driver who has not chosen a PIN yet cannot delete either: the app
+       makes him choose one the next time he signs in, and from then on he can.
+       Otherwise "no PIN yet" would be the same open door. */
+    for (const drv of found.rows) {
+      const gate = await driverAuth.checkSignIn(drv, pin);
+      if (gate.outcome === 'locked') {
+        return res.status(429).json({ error: 'twòp esè', error_en: 'Too many wrong PINs. Try again later.',
+          code: 'pin_locked', minutes: gate.minutes });
+      }
+      if (gate.outcome === 'enroll') {
+        return res.status(403).json({ error: 'Konekte epi chwazi yon PIN anvan ou efase kont ou.',
+          error_en: 'Sign in and choose a PIN first, then you can delete your account.', code: 'pin_not_set' });
+      }
+      if (gate.outcome === 'pin_required') {
+        return res.status(401).json({ error: 'PIN obligatwa', error_en: 'Your PIN is required.', code: 'pin_required' });
+      }
+      if (gate.outcome === 'pin_wrong') {
+        return res.status(401).json({ error: 'PIN pa kòrèk', error_en: 'Wrong PIN.', code: 'pin_wrong',
+          remaining: gate.remaining });
+      }
+    }
     const ids = found.rows.map(r => r.id);
 
     /* ⛔ Not mid-ride. Deleting a driver who is carrying someone strands the
