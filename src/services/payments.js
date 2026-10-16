@@ -575,6 +575,27 @@ async function checkPayment(payment) {
     return { ok: true, payment: out.rows[0], changed: status !== payment.status };
   }
 
+  /* 🛑 16 Oct 2026: SolutionIP's "ok" was taken without looking at HOW MUCH
+     was paid. The same gateway account serves four platforms and its client id
+     is public, so a reference paid with less than we charged must never count
+     as paid (on MyPlopPlop a 20 HTG payment once completed a 50,000 HTG
+     top-up). Less than we charged, or no readable amount: it stays unpaid and
+     is logged loudly for a person to look at. (Stripe checks its own amount;
+     the simulated gateway reports exactly what we charged.) */
+  if (res.paid && payment.provider === 'solutionip') {
+    const got = Number(res.amount);
+    if (!(Number.isFinite(got) && got + 0.5 >= Number(payment.amount))) {
+      console.error('[PAYMENT AMOUNT MISMATCH] ' + payment.reference_id + ': gateway says ' + res.amount +
+        ', we charged ' + payment.amount + ' - NOT marked paid');
+      const out = await pool.query(
+        `UPDATE payments SET attempts=$2, last_checked_at=NOW(), last_response=$3, updated_at=NOW()
+           WHERE id=$1 RETURNING *`,
+        [payment.id, attempts, JSON.stringify(Object.assign({ amount_mismatch: true, charged: payment.amount }, res.raw || {}))]
+      );
+      return { ok: true, payment: out.rows[0], changed: false, amount_mismatch: true };
+    }
+  }
+
   if (res.paid) {
     const out = await pool.query(
       `UPDATE payments SET status='paid', paid_at=COALESCE(paid_at, NOW()),

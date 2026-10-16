@@ -286,6 +286,20 @@ router.post('/request', async (req, res) => {
         price: pricing.calculatePrice(rideType, distanceKm, config, 1.0)
       };
     }
+    /* 🛑 16 Oct 2026: the passenger's page sends the fare it showed (with
+       extras, A/C and surge on top), and that figure was taken as-is - so a
+       request with "price": 20 booked any trip for 20 HTG and left the driver
+       nothing. The page's fare is never below the plain base + distance fare
+       (same constants as the server), so anything under 80% of that, or under
+       the minimum fare, is refused rather than charged. */
+    const floorCfg = await pricing.getPricingConfig();
+    const minFare = Number(floorCfg['minimum_fare_' + rideType]) || 0;
+    const plainFare = havePoints ? pricing.calculatePrice(rideType, estimate.distance_km, floorCfg, 1.0) : minFare;
+    const priceFloor = Math.max(minFare, Math.floor(plainFare * 0.8));
+    const sentPrice = (price == null || price === '') ? 0 : Number(price);   // 0 / absent = the server prices it
+    if (sentPrice !== 0 && !(sentPrice >= priceFloor)) {
+      return res.status(409).json({ error: 'Pri a chanje. Rechaje paj la epi rekòmande. / The price changed - please reload and book again.', code: 'price_below_fare', min_price: priceFloor });
+    }
     const finalPrice = Math.round(Number(price) > 0 ? Number(price) : estimate.price);
     const config = await pricing.getPricingConfig();
     const commission = pricing.calculateCommission(finalPrice, config);
