@@ -68,14 +68,15 @@ router.post('/account/delete', async (req, res) => {
          - every other ride is deleted exactly as before. */
     const meta = await client.query(
       `SELECT r.id, LOWER(COALESCE(r.status, '')) AS status, LOWER(COALESCE(r.payment_status, '')) AS pay,
-              COALESCE(r.refund_due, 0) AS refund_due,
+              COALESCE(r.refund_due, 0) AS refund_due, COALESCE(r.is_test, false) AS is_test,
               EXISTS (SELECT 1 FROM ride_earnings e WHERE e.ride_id = r.id) AS earned
          FROM ride_requests r WHERE r.id = ANY($1::uuid[])`, [ids]);
     const DONE = ['completed', 'cancelled', 'expired', 'no_driver'];
     if (meta.rows.some(r => !DONE.includes(r.status))) {
       return res.status(409).json({ error: 'You have a ride in progress. Finish or cancel it first, then delete your account.' });
     }
-    const money = meta.rows.filter(r => r.pay === 'paid' || r.earned || Number(r.refund_due) > 0).map(r => r.id);
+    // a simulated test ride carries no real money: it is deleted (archived above), never kept
+    const money = meta.rows.filter(r => !r.is_test && (r.pay === 'paid' || r.earned || Number(r.refund_due) > 0)).map(r => r.id);
     if (money.length) {
       await client.query(
         `UPDATE ride_requests

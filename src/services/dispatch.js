@@ -284,6 +284,7 @@ async function refundsOwed() {
             payment_method, updated_at
        FROM ride_requests
       WHERE refund_status = 'owed' AND COALESCE(refund_due, 0) > 0
+        AND COALESCE(is_test, false) = false
       ORDER BY updated_at ASC LIMIT 200`);
   return r.rows;
 }
