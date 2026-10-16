@@ -15,7 +15,11 @@ on:
       days:
         description: How many days back (Render keeps a limited window)
         required: true
-        default: '30'
+        default: '29'
+      diag:
+        description: 'yes = only print what kinds of log entries exist (counts, label names - no values)'
+        required: false
+        default: 'no'
 
 jobs:
   review:
@@ -25,6 +29,7 @@ jobs:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       SID: ${{ github.event.inputs.service_id }}
       DAYS: ${{ github.event.inputs.days }}
+      DIAG: ${{ github.event.inputs.diag }}
     steps:
       - name: Fetch and filter the logs
         run: |
@@ -52,6 +57,23 @@ jobs:
               return any(re.search(x, p) for x in PAT)
           def fmt(t): return t.strftime('%Y-%m-%dT%H:%M:%SZ')
           end = datetime.datetime.utcnow(); start = end - datetime.timedelta(days=DAYS)
+          if os.environ.get('DIAG') == 'yes':
+              from collections import Counter
+              for hours, extra in [(1, []), (24, [('type', 'request')]), (24, [('type', 'app')]), (24*7, [('type', 'request'), ('path', '/api/payouts*')]), (24*7, [('text', 'payouts')])]:
+                  qs = urllib.parse.urlencode([('ownerId', owner), ('resource', SID), ('startTime', fmt(end - datetime.timedelta(hours=hours))), ('endTime', fmt(end)), ('limit', 100), ('direction', 'backward')] + extra)
+                  try:
+                      d = get('/logs?' + qs)
+                  except urllib.error.HTTPError as e:
+                      print('DIAG', hours, extra, 'error', e.code, e.read()[:200]); continue
+                  logs = d.get('logs', [])
+                  kinds = Counter(); names = Counter()
+                  for l in logs:
+                      lab = {x.get('name'): x.get('value') for x in (l.get('labels') or [])}
+                      kinds[lab.get('type')] += 1
+                      for k in lab: names[k] += 1
+                  print('DIAG window=%dh filter=%s -> %d entries, hasMore=%s, types=%s, label names=%s' % (hours, extra, len(logs), d.get('hasMore'), dict(kinds), sorted(names)))
+              open('/tmp/admin_lines.txt', 'w').write('')
+              raise SystemExit(0)
           rows = []; scanned = 0; first = None
           # Render's own request log, narrowed on Render's side to admin-looking paths
           for pf in ['/api/payouts*', '/api/Payouts*', '/API/*', '/api/drivers*', '/api/Drivers*', '/api/rides/reports*', '/api/rides/earnings*', '/api/rides', '/api/rides/', '/api/payments/admin*', '/api/medical*', '/api/pricing*', '/api/businesses*', '/api/trips*', '/api/logistics*', '/api/diag*', '/api/admin-account*', '/api/dash*']:

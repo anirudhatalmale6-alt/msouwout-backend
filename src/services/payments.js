@@ -449,18 +449,14 @@ async function startPayment({ subject_type, subject_id, amount, method, payer_ph
       if (!fresh) return { ok: true, payment: old, reused: true };
 
       /* She asked for a new page. Settle the old one first. */
+      /* 16 Oct 2026: through checkPayment - the ONE place that may say
+         "paid" - so the amount is checked and the RIDE is marked paid too.
+         This used to set the payment row to paid by itself: the ride stayed
+         "unpaid" and she was asked to pay a second time. */
       let settled = null;
-      try { settled = await provider.verify({ reference_id: old.reference_id,
-                                              provider_ref: old.provider_ref,
-                                              amount: old.amount }); }
-      catch (e) { settled = null; }
-      if (settled && settled.ok && settled.paid) {
-        await pool.query(
-          `UPDATE payments SET status='paid', paid_at=COALESCE(paid_at, NOW()),
-                  provider_ref=COALESCE(provider_ref,$2), updated_at=NOW()
-            WHERE id=$1`, [old.id, settled.provider_ref || null]);
-        const again = await pool.query('SELECT * FROM payments WHERE id=$1', [old.id]);
-        return { ok: true, payment: again.rows[0], reused: true, already_paid: true };
+      try { settled = await checkPayment(old); } catch (e) { settled = null; }
+      if (settled && settled.ok && settled.payment && settled.payment.status === 'paid') {
+        return { ok: true, payment: settled.payment, reused: true, already_paid: true };
       }
       /* Not paid. Take the LINK away so it can never be handed to her again,
          and fall through to a genuinely new transaction.
@@ -597,16 +593,22 @@ async function checkPayment(payment) {
   }
 
   if (res.paid) {
+    /* 16 Oct 2026: "paid" happens ONCE per payment. Two checks at the same
+       moment (poller + passenger's return) used to both run applyToSubject. */
     const out = await pool.query(
       `UPDATE payments SET status='paid', paid_at=COALESCE(paid_at, NOW()),
               provider_ref=COALESCE($3, provider_ref), attempts=$2,
               last_checked_at=NOW(), last_response=$4, updated_at=NOW()
-         WHERE id=$1 RETURNING *`,
+         WHERE id=$1 AND status <> 'paid' RETURNING *`,
       [payment.id, attempts, res.provider_ref, JSON.stringify(res.raw || {})]
     );
+    if (!out.rows.length) {
+      const cur = await pool.query('SELECT * FROM payments WHERE id=$1', [payment.id]);
+      return { ok: true, payment: cur.rows[0], changed: false };
+    }
     const paid = out.rows[0];
     await applyToSubject(paid);
-    return { ok: true, payment: paid, changed: payment.status !== 'paid' };
+    return { ok: true, payment: paid, changed: true };
   }
 
   const status = attempts >= MAX_ATTEMPTS ? 'expired' : 'pending';
@@ -630,13 +632,47 @@ async function applyToSubject(payment) {
   if (payment.status !== 'paid' || !payment.subject_id) return;
 
   if (payment.subject_type === 'ride') {
-    await pool.query(
+    /* 🛑 16 Oct 2026 - ONE RIDE, ONE PAYMENT. Jeffery: "partial payments,
+       duplicate payment confirmations, payment retries, and canceled
+       transactions". The ride is marked paid by ONE conditional update. A
+       second, different payment for a ride already paid (an old link paid
+       after a new one) is recorded as OWED BACK in full; a payment that lands
+       on a ride already cancelled or expired is owed back too, and earns
+       nobody anything. Nothing here sends money - it is written down so a
+       person settles it (SolutionIP cannot refund). */
+    const won = await pool.query(
       `UPDATE ride_requests
           SET payment_status='paid', payment_id=$2,
               payment_method=$3, updated_at=NOW()
-        WHERE id=$1`,
+        WHERE id=$1 AND (payment_status IS DISTINCT FROM 'paid' OR payment_id = $2)
+      RETURNING status`,
       [payment.subject_id, payment.id, payment.method]
     );
+    if (!won.rows.length) {
+      await pool.query(
+        `UPDATE ride_requests
+            SET refund_due = COALESCE(refund_due, 0) + $2, refund_status = 'owed',
+                refund_note = TRIM(COALESCE(refund_note, '') || ' ' || $3), updated_at = NOW()
+          WHERE id = $1`,
+        [payment.subject_id, Math.round(Number(payment.amount) || 0),
+         'Duplicate payment ' + payment.reference_id + ' (' + payment.amount + ' HTG) - owed back.']);
+      console.error('[PAYMENT DUPLICATE] ' + payment.reference_id + ' paid a ride that was already paid - ' +
+        payment.amount + ' HTG recorded as owed back');
+      return;
+    }
+    const rideStatus = String(won.rows[0].status || '').toLowerCase();
+    if (rideStatus === 'cancelled' || rideStatus === 'expired' || rideStatus === 'no_driver') {
+      await pool.query(
+        `UPDATE ride_requests
+            SET refund_due = GREATEST(COALESCE(refund_due, 0), $2), refund_status = 'owed',
+                refund_note = TRIM(COALESCE(refund_note, '') || ' ' || $3), updated_at = NOW()
+          WHERE id = $1 AND COALESCE(refund_status, '') <> 'refunded'`,
+        [payment.subject_id, Math.round(Number(payment.amount) || 0),
+         'Paid after the ride was ' + rideStatus + ' (' + payment.reference_id + ') - owed back.']);
+      console.error('[PAYMENT LATE] ' + payment.reference_id + ' arrived after the ride was ' + rideStatus +
+        ' - ' + payment.amount + ' HTG recorded as owed back');
+      return;
+    }
 
     /* ═══ THE EXTRA PASSENGERS ARE NOW COVERED, AND NOT BEFORE ═══════════
        Jeffery, 8 Oct: "Activate their DASH coverage only after the server

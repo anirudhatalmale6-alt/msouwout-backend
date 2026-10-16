@@ -123,14 +123,28 @@ router.post('/create', async (req, res) => {
     let returnUrl = subject === 'test'
       ? 'https://msouwout.com/pay-test.html'
       : 'https://msouwout.com/';
+    /* 16 Oct 2026: a payment is for a RIDE (priced from the database) or the
+       fixed 20 HTG gateway test - nothing else, and never an amount the
+       caller chose for something the server cannot price. */
+    if (subject !== 'ride' && subject !== 'test') {
+      return res.status(400).json({ error: 'Unknown payment subject' });
+    }
+    if (subject === 'ride' && !subjectId) {
+      return res.status(400).json({ error: 'ride_id is required' });
+    }
+    if (subject === 'test') amountToCharge = 20;
     if (subject === 'ride' && subjectId) {
       const r = await pool.query(
-        `SELECT price, medical_fee, total_with_protection, payment_status, tracking_code
+        `SELECT price, medical_fee, total_with_protection, payment_status, tracking_code, status
            FROM ride_requests WHERE id = $1`, [subjectId]);
       if (!r.rows.length) return res.status(404).json({ error: 'Ride not found' });
       const ride = r.rows[0];
       if (ride.payment_status === 'paid') {
         return res.status(409).json({ error: 'This ride is already paid' });
+      }
+      // a cancelled or expired ride is not paid for (it would only be owed back)
+      if (['cancelled', 'expired', 'no_driver'].includes(String(ride.status || '').toLowerCase())) {
+        return res.status(409).json({ error: 'This ride was cancelled. Nothing to pay.' });
       }
       amountToCharge = ride.total_with_protection > 0
         ? ride.total_with_protection
@@ -165,9 +179,12 @@ router.post('/create', async (req, res) => {
 
     const p = out.payment;
     if (subject === 'ride' && subjectId) {
+      // never turns a PAID ride back into "pending" (a retry that found the old
+      // attempt paid, or a payment confirming while this request ran)
       await pool.query(
         `UPDATE ride_requests SET payment_status='pending', payment_id=$2,
-                payment_method=$3, updated_at=NOW() WHERE id=$1`,
+                payment_method=$3, updated_at=NOW()
+          WHERE id=$1 AND payment_status IS DISTINCT FROM 'paid'`,
         [subjectId, p.id, p.method]);
     }
 
