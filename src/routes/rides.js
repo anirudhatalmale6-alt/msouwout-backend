@@ -1631,14 +1631,22 @@ router.patch('/:id/refund', async (req, res) => {
       /* Not an error - someone pressed twice. Say so instead of double-marking. */
       return res.status(409).json({ error: 'This refund is already recorded as paid' });
     }
-    const paid = amount != null ? Math.round(Number(amount)) : Number(ride.refund_due);
-    await pool.query(
+    /* 16 Oct 2026: never more than is owed, recorded ONCE (two clicks cannot
+       both record it), and the reason it was owed is KEPT - the note is added
+       to, not overwritten. */
+    const paid = amount != null && amount !== '' ? Math.round(Number(amount)) : Number(ride.refund_due);
+    if (!(paid > 0) || paid > Number(ride.refund_due)) {
+      return res.status(400).json({ error: 'The amount must be between 1 and ' + ride.refund_due + ' HTG' });
+    }
+    const done = await pool.query(
       `UPDATE ride_requests
           SET refund_status = 'refunded', refunded_at = NOW(),
-              refund_note = $2, updated_at = NOW()
-        WHERE id = $1`,
+              refund_note = TRIM(COALESCE(refund_note, '') || ' | ' || $2), updated_at = NOW()
+        WHERE id = $1 AND refund_status = 'owed'
+      RETURNING id`,
       [req.params.id,
-       `ref=${String(reference).trim()} amount=${paid}` + (note ? ` note=${String(note).trim()}` : '')]);
+       `refunded ref=${String(reference).trim()} amount=${paid}` + (note ? ` note=${String(note).trim()}` : '')]);
+    if (!done.rows.length) return res.status(409).json({ error: 'This refund is already recorded as paid' });
     console.warn(`[REFUND SETTLED] ride ${ride.tracking_code} — ${paid} HTG, reference ${reference}`);
     res.json({ status: 'refunded', ride: ride.tracking_code, amount: paid, reference });
   } catch (err) {

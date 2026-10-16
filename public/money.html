@@ -260,6 +260,14 @@ function say(id,text,good){
 /* Two kinds of ride nobody can decide with a timer: she paid and no driver
    ever came, and a driver started a ride and never finished it. The second one
    is also silently keeping that driver from taking any more work. */
+function recordRefund(id, code, due){
+  var ref = prompt('Refund '+code+': MonCash/NatCash transfer reference for '+due+' HTG:');
+  if(!ref||!ref.trim()) return;
+  fetch('/api/rides/'+encodeURIComponent(id)+'/refund',{method:'PATCH',headers:{'x-admin-secret':store.getItem(KEY),'Content-Type':'application/json'},body:JSON.stringify({reference:ref.trim()})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){ alert(x.ok?'Recorded: '+code+' refunded.':(x.d.error||'Error')); loadAttention(); })
+    .catch(function(){ alert('Connection error.'); });
+}
 function loadAttention(){
   var s=store.getItem(KEY);
   var box=document.getElementById('attention'), body=document.getElementById('attentionBody');
@@ -274,6 +282,14 @@ function loadAttention(){
            'no driver after '+Math.round(x.waited_min)+' min<br>'+
            '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.customer_phone||'')+
            ' — needs a refund decision</span></div>';
+      });
+      /* 16 Oct 2026: every refund still owed, until the transfer is recorded */
+      (d.refunds_owed||[]).forEach(function(x){
+        h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
+           '<b>'+esc(x.tracking_code)+'</b> — REFUND OWED: <b>'+fmt(x.refund_due)+' HTG</b> to '+esc(x.customer_phone||'')+
+           ' ('+esc(x.payment_method||'')+')<br>'+
+           '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.refund_note||'')+'</span><br>'+
+           '<button class="refresh" style="margin-top:6px" onclick="recordRefund(\''+esc(x.id)+'\',\''+esc(x.tracking_code)+'\','+Number(x.refund_due)+')">I sent it — record the reference</button></div>';
       });
       (d.started_but_never_finished||[]).forEach(function(x){
         h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+

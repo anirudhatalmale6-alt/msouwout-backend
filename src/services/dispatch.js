@@ -274,12 +274,28 @@ async function stuckInProgress() {
  * wrote a long comment in coverage() about a guard that cannot fire, and then
  * built a report nobody reads. Reporting it to a function nobody calls is the
  * same as not reporting it. */
+/* 16 Oct 2026 - Jeffery: "ensure all refund obligations appear clearly in the
+   administrator dashboard so that no customer refund is overlooked." Every
+   ride with money owed back (cancelled after paying, paid twice, paid after a
+   cancellation) until a person records the transfer. */
+async function refundsOwed() {
+  const r = await pool.query(
+    `SELECT id, tracking_code, customer_phone, refund_due, refund_note, status,
+            payment_method, updated_at
+       FROM ride_requests
+      WHERE refund_status = 'owed' AND COALESCE(refund_due, 0) > 0
+      ORDER BY updated_at ASC LIMIT 200`);
+  return r.rows;
+}
+
 async function needsAttention() {
-  const [stranded, stuck] = await Promise.all([paidAndStranded(), stuckInProgress()]);
+  const [stranded, stuck, owed] = await Promise.all([paidAndStranded(), stuckInProgress(), refundsOwed()]);
   return {
     paid_but_no_driver: stranded,
     started_but_never_finished: stuck,
-    total: stranded.length + stuck.length
+    refunds_owed: owed,
+    refunds_owed_total: owed.reduce(function (s, x) { return s + (Number(x.refund_due) || 0); }, 0),
+    total: stranded.length + stuck.length + owed.length
   };
 }
 
@@ -297,7 +313,9 @@ function startSweeper(everyMs = 5 * 60 * 1000) {
           a.paid_but_no_driver.map(r => r.tracking_code + ' paid, no driver').join(', ') +
           (a.paid_but_no_driver.length && a.started_but_never_finished.length ? '; ' : '') +
           a.started_but_never_finished.map(r =>
-            r.tracking_code + ' running ' + Math.round(r.running_min / 60) + 'h').join(', '));
+            r.tracking_code + ' running ' + Math.round(r.running_min / 60) + 'h').join(', ') +
+          (a.refunds_owed && a.refunds_owed.length ? ' | refunds owed: ' + a.refunds_owed.map(r =>
+            r.tracking_code + ' ' + r.refund_due + ' HTG').join(', ') : ''));
       }
     })
     .catch(e => console.error('[DISPATCH] sweep failed (rides unaffected):', e.message));
@@ -312,6 +330,6 @@ module.exports = {
   RELEASE_ACCEPTED_AFTER_MIN,
   STUCK_IN_PROGRESS_MIN,
   coverage, waitState, expireStale, releaseAbandoned, paidAndStranded,
-  stuckInProgress, needsAttention,
+  stuckInProgress, needsAttention, refundsOwed,
   startSweeper, stopSweeper
 };
