@@ -31,51 +31,56 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import json, os, re, time, urllib.request, urllib.parse, urllib.error, datetime
-          K = os.environ['RENDER_API_KEY']; SID = os.environ['SID']; DAYS = int(os.environ['DAYS'])
-          def get(path):
-              q = urllib.request.Request('https://api.render.com/v1' + path, headers={'Authorization': 'Bearer ' + K, 'Accept': 'application/json'})
-              return json.loads(urllib.request.urlopen(q, timeout=60).read())
+          K = os.environ['RENDER_API_KEY']; SID = os.environ['SID']; DAYS = min(int(os.environ['DAYS']), 29)
+          def get(path, tries=4):
+              for t in range(tries):
+                  try:
+                      q = urllib.request.Request('https://api.render.com/v1' + path, headers={'Authorization': 'Bearer ' + K, 'Accept': 'application/json'})
+                      return json.loads(urllib.request.urlopen(q, timeout=120).read())
+                  except urllib.error.HTTPError:
+                      raise
+                  except Exception as e:
+                      print('retry after:', type(e).__name__); time.sleep(5 * (t + 1))
+              raise RuntimeError('Render logs API kept timing out')
           svc = get('/services/' + SID)
           owner = svc.get('ownerId') or svc.get('service', {}).get('ownerId')
-          REQ = re.compile(r'"([A-Z]+) (\S+) HTTP/[0-9.]+" ([0-9]{3})')
-          PAT = [r'^/api/payouts', r'^/api/drivers/admin', r'^/api/drivers/stats', r'^/api/drivers/?$', r'^/api/drivers/[^/]+/(approve|reject|suspend|pin)',
-                 r'^/api/rides/reports', r'^/api/rides/earnings', r'^/api/rides/?$', r'^/api/rides/[^/]+/refund', r'^/api/payments/admin', r'^/api/medical/(dashboard|export|claims|settlement)',
-                 r'^/api/pricing', r'^/api/businesses/?($|stats|[^/]+/(approve|reject))', r'^/api/trips/[^/]+/(approve|reject)', r'^/api/logistics/.*verify', r'^/api/diag', r'^/api/admin-account', r'^/api/dash']
-          def is_admin(msg):
-              m = REQ.search(msg)
-              if not m: return False
-              path = m.group(2).split('?')[0].lower().rstrip('/') or '/'
-              return any(re.search(x, path) for x in PAT)
-          class _A:
-              search = staticmethod(is_admin)
-          ADMIN = _A()
+          PAT = [r'^/api/payouts', r'^/api/drivers/admin', r'^/api/drivers/stats', r'^/api/drivers$', r'^/api/drivers/[^/]+/(approve|reject|suspend|pin)',
+                 r'^/api/rides/reports', r'^/api/rides/earnings', r'^/api/rides$', r'^/api/rides/[^/]+/refund', r'^/api/payments/admin', r'^/api/medical/(dashboard|export|claims|settlement)',
+                 r'^/api/pricing', r'^/api/businesses($|/stats|/[^/]+/(approve|reject))', r'^/api/trips/[^/]+/(approve|reject)', r'^/api/logistics/.*verify', r'^/api/diag', r'^/api/admin-account', r'^/api/dash']
+          def is_admin(path):
+              p = (path or '').split('?')[0].lower().rstrip('/') or '/'
+              return any(re.search(x, p) for x in PAT)
           def fmt(t): return t.strftime('%Y-%m-%dT%H:%M:%SZ')
-          end = datetime.datetime.utcnow()
-          lines = []; total = 0; first = None; used_days = None
-          for days in [d for d in (min(DAYS, 29), 14, 7, 3, 1)]:
-              start = end - datetime.timedelta(days=days); cursor = fmt(start); pages = 0; failed = False
-              lines = []; total = 0; first = None
-              while pages < 600:
-                  qs = urllib.parse.urlencode({'ownerId': owner, 'resource': SID, 'startTime': cursor, 'endTime': fmt(end), 'limit': 100, 'direction': 'forward'})
+          end = datetime.datetime.utcnow(); start = end - datetime.timedelta(days=DAYS)
+          rows = []; scanned = 0; first = None
+          # Render's own request log, narrowed on Render's side to admin-looking paths
+          for pf in ['/api/payouts*', '/api/Payouts*', '/API/*', '/api/drivers*', '/api/Drivers*', '/api/rides/reports*', '/api/rides/earnings*', '/api/rides', '/api/rides/', '/api/payments/admin*', '/api/medical*', '/api/pricing*', '/api/businesses*', '/api/trips*', '/api/logistics*', '/api/diag*', '/api/admin-account*', '/api/dash*']:
+              cursor = fmt(start); pages = 0
+              while pages < 300:
+                  qs = urllib.parse.urlencode([('ownerId', owner), ('resource', SID), ('type', 'request'), ('path', pf), ('startTime', cursor), ('endTime', fmt(end)), ('limit', 100), ('direction', 'forward')])
                   try:
                       d = get('/logs?' + qs)
                   except urllib.error.HTTPError as e:
-                      print('logs API error for a %d-day window: %s %s' % (days, e.code, e.read()[:300].decode('utf8', 'replace'))); failed = True; break
+                      print('logs API error (%s): %s %s' % (pf, e.code, e.read()[:200].decode('utf8', 'replace'))); break
                   logs = d.get('logs', []); pages += 1
                   for l in logs:
-                      total += 1; msg = l.get('message', ''); ts = l.get('timestamp', '')
-                      first = first or ts
-                      if ADMIN.search(msg): lines.append(ts + ' ' + msg)
+                      scanned += 1
+                      lab = {x.get('name'): x.get('value') for x in (l.get('labels') or [])}
+                      path = lab.get('path') or ''
+                      if not is_admin(path): continue
+                      first = first or l.get('timestamp')
+                      rows.append({'t': l.get('timestamp'), 'method': lab.get('method'), 'path': path, 'status': lab.get('statusCode'), 'ip': lab.get('clientIP'), 'ua': lab.get('userAgent'), 'msg': l.get('message', '')[:300]})
                   if not d.get('hasMore'): break
                   cursor = d.get('nextStartTime') or (logs[-1]['timestamp'] if logs else None)
                   if not cursor: break
-              if not failed:
-                  used_days = days; break
-          print('window used (days):', used_days)
-          open('/tmp/admin_lines.txt', 'w').write('\n'.join(lines))
-          ok = [x for x in lines if re.search(r'" (2[0-9]{2}) ', x)]
-          print('log lines scanned:', total, '| earliest log line available:', first)
-          print('admin-route requests:', len(lines), '| answered 2xx:', len(ok))
+          seen = set(); uniq = []
+          for r in rows:
+              k = (r['t'], r['path'], r['method'])
+              if k not in seen: seen.add(k); uniq.append(r)
+          open('/tmp/admin_lines.txt', 'w').write('\n'.join(json.dumps(r) for r in uniq))
+          ok = [r for r in uniq if str(r.get('status') or '').startswith('2')]
+          print('days covered:', DAYS, '| request-log entries checked:', scanned)
+          print('admin-route requests:', len(uniq), '| answered 2xx:', len(ok), '| distinct callers:', len(set(r.get('ip') for r in uniq)))
           PY
       - name: Encrypt the matching lines
         run: |
