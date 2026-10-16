@@ -140,7 +140,7 @@ tbody tr{border-top:1px solid var(--line)}
       <div style="font-size:.78rem;color:#7F1D1D;margin-bottom:10px">Nothing here is decided automatically — money is involved.</div>
       <div id="attentionBody"></div>
     </div>
-    <div style="margin:-6px 0 16px;text-align:right"><button class="refresh" onclick="endRideByCode()">End an active ride…</button></div>
+    <div style="margin:-6px 0 16px;text-align:right"><button class="refresh" onclick="endRideByCode()">End an active ride…</button> <button class="refresh" onclick="markInternalTest()">Mark a ride as internal test…</button></div>
 
     <div class="grid">
       <div class="kpi driver"><div class="label">Driver payouts</div><div class="val" id="kDriver">—</div><div class="note">Due to drivers within 24h</div></div>
@@ -305,6 +305,21 @@ function endRide(code){
     .then(function(x){ alert(x.ok?('Ride '+code+' closed as '+x.d.status+(x.d.refund_recorded?' - '+x.d.refund_recorded+' HTG recorded as owed':'')+'.'):(x.d.error||'Error')); loadAttention(); })
     .catch(function(){ alert('Connection error.'); });
 }
+function reconcileInternal(id, code, due){
+  var n = prompt('Internal test '+code+' ('+due+' HTG): how was it reconciled? (e.g. "company MonCash, no transfer")','');
+  if(!n||!n.trim()) return;
+  fetch('/api/rides/'+encodeURIComponent(id)+'/refund',{method:'PATCH',headers:hdr(),body:JSON.stringify({reconciled_internally:true,note:n.trim()})})
+    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(x){ alert(x.ok?code+' reconciled (no transfer).':(x.d.error||'Error')); loadAttention(); })
+    .catch(function(){ alert('Connection error.'); });
+}
+function markInternalTest(){
+  var c = prompt('Tracking code of the ride that was an AUTHORISED INTERNAL TEST (MW-...):',''); if(!c||!c.trim()) return;
+  var n = prompt('Who tested and why (required):',''); if(!n||!n.trim()) return;
+  post('/api/rides/'+encodeURIComponent(c.trim().toUpperCase())+'/internal-test',{note:n.trim()})
+    .then(function(x){ alert(x.ok?(x.d.ride+' is now an INTERNAL TEST: out of revenue, earnings and DASH; records kept.'+(x.d.earnings_set_aside?' '+x.d.earnings_set_aside+' unpaid earning(s) set aside.':'')):(x.d.error||'Error')); loadAttention(); })
+    .catch(function(){ alert('Connection error.'); });
+}
 function endRideByCode(){
   var c = prompt('Tracking code of the ride to end (MW-...):',''); if(!c||!c.trim()) return;
   endRide(c.trim().toUpperCase());
@@ -326,6 +341,17 @@ function loadAttention(){
       });
       /* 16 Oct 2026: every refund still owed, until the transfer is recorded */
       (d.refunds_owed||[]).forEach(function(x){
+        if(x.internal_test){
+          /* 16 Oct 2026: an authorised INTERNAL TEST paid with real money. Kept
+             visible until reconciled; not business revenue. */
+          h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
+             '<b>'+esc(x.tracking_code)+'</b> — <span style="background:#1D4ED8;color:#fff;border-radius:6px;padding:1px 6px;font-size:.72rem;font-weight:800">INTERNAL TEST</span> '+
+             'TO RECONCILE: <b>'+fmt(x.refund_due)+' HTG</b> ('+esc(x.payment_method||'')+')<br>'+
+             '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.internal_test_note||'')+'</span><br>'+
+             '<button class="refresh" style="margin-top:6px" onclick="reconcileInternal(\''+esc(x.id)+'\',\''+esc(x.tracking_code)+'\','+Number(x.refund_due)+')">Company funds — reconcile, no transfer</button> '+
+             '<button class="refresh" style="margin-top:6px" onclick="recordRefund(\''+esc(x.id)+'\',\''+esc(x.tracking_code)+'\','+Number(x.refund_due)+')">Reimbursed — record the reference</button></div>';
+          return;
+        }
         h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
            '<b>'+esc(x.tracking_code)+'</b> — REFUND OWED: <b>'+fmt(x.refund_due)+' HTG</b> to '+esc(x.customer_phone||'')+
            ' ('+esc(x.payment_method||'')+')<br>'+

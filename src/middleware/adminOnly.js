@@ -72,6 +72,8 @@ const ADMIN_ONLY = [
   /* 16 Oct 2026: ending somebody's ride, reading every problem report (with
      phone numbers) and deciding a refund are the administrator's alone. */
   ['POST', /^\/api\/rides\/[^/]+\/admin-end$/],
+  // Classifying a ride as an internal test takes it out of the business figures.
+  ['POST', /^\/api\/rides\/[^/]+\/internal-test$/],
   ['GET', /^\/api\/rides\/admin\/problems$/],
   ['POST', /^\/api\/rides\/problems\/[^/]+\/review$/],
   // The permanent admin activity record (who did what, from where).

@@ -69,6 +69,7 @@ router.post('/account/delete', async (req, res) => {
     const meta = await client.query(
       `SELECT r.id, LOWER(COALESCE(r.status, '')) AS status, LOWER(COALESCE(r.payment_status, '')) AS pay,
               COALESCE(r.refund_due, 0) AS refund_due, COALESCE(r.is_test, false) AS is_test,
+              COALESCE(r.internal_test, false) AS internal_test,
               EXISTS (SELECT 1 FROM ride_earnings e WHERE e.ride_id = r.id) AS earned
          FROM ride_requests r WHERE r.id = ANY($1::uuid[])`, [ids]);
     const DONE = ['completed', 'cancelled', 'expired', 'no_driver'];
@@ -76,7 +77,9 @@ router.post('/account/delete', async (req, res) => {
       return res.status(409).json({ error: 'You have a ride in progress. Finish or cancel it first, then delete your account.' });
     }
     // a simulated test ride carries no real money: it is deleted (archived above), never kept
-    const money = meta.rows.filter(r => !r.is_test && (r.pay === 'paid' || r.earned || Number(r.refund_due) > 0)).map(r => r.id);
+    /* ⛔ An INTERNAL test (real money, authorised tester) is kept like any money
+       ride - its records are the audit trail Jeffery asked to preserve. */
+    const money = meta.rows.filter(r => (!r.is_test || r.internal_test) && (r.pay === 'paid' || r.earned || Number(r.refund_due) > 0)).map(r => r.id);
     if (money.length) {
       await client.query(
         `UPDATE ride_requests
@@ -119,7 +122,8 @@ router.post('/account/delete', async (req, res) => {
                 'archived on account/delete'
            FROM ride_requests r
            LEFT JOIN drivers d ON d.id = r.driver_id
-          WHERE r.id = ANY($1::uuid[]) AND COALESCE(r.is_test,false) = true`,
+          WHERE r.id = ANY($1::uuid[]) AND COALESCE(r.is_test,false) = true
+            AND COALESCE(r.internal_test,false) = false`,
         [ids]);
     } catch (e) {
       /* ⛔ Never let the archive stop a deletion. The right to erase an
@@ -1667,14 +1671,32 @@ router.patch('/:id/cancel', async (req, res) => {
 router.patch('/:id/refund', async (req, res) => {
   try {
     const { reference, note, amount } = req.body || {};
-    if (!reference || !String(reference).trim()) {
-      return res.status(400).json({ error: 'A transfer reference is required' });
-    }
+    const internalOnly = (req.body || {}).reconciled_internally === true;
     const r = await pool.query(
-      `SELECT id, tracking_code, refund_due, refund_status FROM ride_requests WHERE id = $1`,
+      `SELECT id, tracking_code, refund_due, refund_status, COALESCE(internal_test,false) AS internal_test
+         FROM ride_requests WHERE id = $1`,
       [req.params.id]);
     if (!r.rows.length) return res.status(404).json({ error: 'Kous pa jwenn' });
     const ride = r.rows[0];
+    /* 16 Oct 2026: "If company funds were used, reconcile the transactions
+       internally without unnecessary transfers." Only for an INTERNAL test, and
+       only with a note saying how; a customer refund always needs a reference. */
+    if (internalOnly) {
+      if (!ride.internal_test) return res.status(400).json({ error: 'Only an internal test can be reconciled without a transfer' });
+      if (!note || !String(note).trim()) return res.status(400).json({ error: 'Say how it was reconciled (note)' });
+      if (ride.refund_status !== 'owed') return res.status(409).json({ error: 'Nothing left to reconcile on this ride' });
+      const done = await pool.query(
+        `UPDATE ride_requests SET refund_status = 'reconciled', refunded_at = NOW(),
+                refund_note = TRIM(COALESCE(refund_note,'') || ' | ' || $2), updated_at = NOW()
+          WHERE id = $1 AND refund_status = 'owed' RETURNING id`,
+        [ride.id, 'reconciled internally, no transfer: ' + String(note).trim().slice(0, 300)]);
+      if (!done.rows.length) return res.status(409).json({ error: 'Nothing left to reconcile on this ride' });
+      console.warn(`[RECONCILED] internal test ${ride.tracking_code} - ${ride.refund_due} HTG closed without a transfer`);
+      return res.json({ status: 'reconciled', ride: ride.tracking_code, amount: Number(ride.refund_due) });
+    }
+    if (!reference || !String(reference).trim()) {
+      return res.status(400).json({ error: 'A transfer reference is required' });
+    }
     if (!Number(ride.refund_due)) {
       return res.status(400).json({ error: 'This ride has no refund owed' });
     }
@@ -1805,6 +1827,53 @@ function refundRoom(r) {
   const already = Number(r.refund_due) || 0;
   return { paid: Math.round(paid), already, room: Math.max(0, Math.round(paid - already)) };
 }
+
+/* POST /api/rides/:id/internal-test - admin only. { note, internal_test?: false to undo }
+   Marks a ride as an authorised internal test (real money). Nothing is deleted
+   and the payment row is untouched; the ride simply stops counting as business
+   (it is is_test too, so revenue/earnings/DASH/qualification all skip it).
+   Driver earnings already recorded and NOT yet paid out are set aside
+   ('excluded_test'); anything already PAID OUT is left alone and reported. */
+router.post('/:id/internal-test', async (req, res) => {
+  try {
+    const r = await findRide(req.params.id);
+    if (!r) return res.status(404).json({ error: 'Kous pa jwenn' });
+    const undo = (req.body || {}).internal_test === false;
+    const note = String((req.body || {}).note || '').trim().slice(0, 300);
+    if (undo) {
+      if (!r.internal_test) return res.status(409).json({ error: 'This ride is not marked as an internal test' });
+      await pool.query(
+        `UPDATE ride_requests SET internal_test = false, is_test = false,
+                internal_test_note = TRIM(COALESCE(internal_test_note,'') || ' | unmarked: ' || $2), updated_at = NOW()
+          WHERE id = $1`, [r.id, note || 'no reason given']);
+      await pool.query(`UPDATE ride_earnings SET status = 'pending' WHERE ride_id = $1 AND status = 'excluded_test'`, [r.id]);
+      console.warn(`[INTERNAL TEST] ride ${r.tracking_code} UNMARKED: ${note}`);
+      return res.json({ ok: true, ride: r.tracking_code, internal_test: false });
+    }
+    if (!note) return res.status(400).json({ error: 'A note is required (who tested, why)' });
+    /* Only a FINISHED ride: is_test also decides which drivers may see a ride,
+       so flipping it on a live one would change who can serve it. */
+    if (!['completed', 'cancelled', 'expired', 'no_driver'].includes(String(r.status || '').toLowerCase())) {
+      return res.status(409).json({ error: 'Only a finished ride can be classified (this one is ' + r.status + ')' });
+    }
+    await pool.query(
+      `UPDATE ride_requests SET internal_test = true, is_test = true, internal_test_at = NOW(),
+              internal_test_note = $2, updated_at = NOW()
+        WHERE id = $1`, [r.id, note]);
+    const ex = await pool.query(
+      `UPDATE ride_earnings SET status = 'excluded_test' WHERE ride_id = $1 AND status = 'pending' RETURNING id`, [r.id]);
+    const paidOut = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM ride_earnings WHERE ride_id = $1 AND status IN ('approved','paid')`, [r.id]);
+    console.warn(`[INTERNAL TEST] ride ${r.tracking_code} marked: ${note}` +
+                 (ex.rowCount ? ` - ${ex.rowCount} unpaid earning(s) set aside` : ''));
+    res.json({ ok: true, ride: r.tracking_code, internal_test: true,
+               earnings_set_aside: ex.rowCount, earnings_already_paid_untouched: paidOut.rows[0].n,
+               refund_due: Number(r.refund_due) || 0, refund_status: r.refund_status || null });
+  } catch (err) {
+    console.error('internal-test error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
 
 /* POST /api/rides/problems/:pid/review - admin only.
    { decision: 'refund' | 'no_refund', amount?, note? }

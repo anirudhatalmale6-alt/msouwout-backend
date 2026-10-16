@@ -281,10 +281,13 @@ async function stuckInProgress() {
 async function refundsOwed() {
   const r = await pool.query(
     `SELECT id, tracking_code, customer_phone, refund_due, refund_note, status,
-            payment_method, updated_at
+            payment_method, updated_at, COALESCE(internal_test, false) AS internal_test,
+            internal_test_note
        FROM ride_requests
       WHERE refund_status = 'owed' AND COALESCE(refund_due, 0) > 0
-        AND COALESCE(is_test, false) = false
+        /* simulated tests never owe anything; INTERNAL tests (real money) stay
+           listed, labelled "to reconcile", until somebody closes them */
+        AND (COALESCE(is_test, false) = false OR COALESCE(internal_test, false) = true)
       ORDER BY updated_at ASC LIMIT 200`);
   return r.rows;
 }
@@ -309,7 +312,10 @@ async function needsAttention() {
     paid_but_no_driver: stranded,
     started_but_never_finished: stuck,
     refunds_owed: owed,
-    refunds_owed_total: owed.reduce(function (s, x) { return s + (Number(x.refund_due) || 0); }, 0),
+    refunds_owed_total: owed.filter(function (x) { return !x.internal_test; })
+      .reduce(function (s, x) { return s + (Number(x.refund_due) || 0); }, 0),
+    internal_test_to_reconcile_total: owed.filter(function (x) { return x.internal_test; })
+      .reduce(function (s, x) { return s + (Number(x.refund_due) || 0); }, 0),
     problems_open: problems,
     total: stranded.length + stuck.length + owed.length + problems.length
   };

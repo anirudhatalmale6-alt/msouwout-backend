@@ -554,6 +554,18 @@ async function runMigrations(client) {
           cred VARCHAR(16), outcome VARCHAR(20), status INTEGER, note VARCHAR(300)
         );
         CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (at);
+        /* 16 Oct 2026, Jeffery: "Classify both transactions as internal testing
+           transactions. Keep the original payment records... excluded from actual
+           business revenue, driver earnings, DASH commissions, and Koutye
+           commissions... without deleting their original audit records."
+           An INTERNAL TEST is a ride an authorised tester paid for with REAL
+           money. It is also marked is_test, so every existing money exclusion
+           (revenue, earnings, DASH, qualification) applies at once - but unlike a
+           simulated test ride it is NEVER deleted, and any refund on it stays on
+           the money page ("to reconcile") until somebody closes it. */
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS internal_test BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS internal_test_note TEXT;
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS internal_test_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS released_at TIMESTAMP WITH TIME ZONE;
         /* Where to reach a driver's phone when the page is CLOSED. One row per
            browser, not per driver: a man with a phone and a tablet gets told
