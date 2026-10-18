@@ -38,6 +38,7 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
 const { rideIsTest } = require('../services/testmode');
 const pricing = require('../services/pricing');
+const ratings = require('../services/ratings');
 const earnings = require('../services/earnings');
 const dispatch = require('../services/dispatch');
 const alerts = require('../services/driverAlerts');
@@ -659,6 +660,17 @@ router.post('/history', async (req, res) => {
  * report nobody reads is not a report. */
 /* GET /api/rides/admin/problems?status=open - admin only (adminOnly list).
    ⚠️ MUST stay above GET /:id, which would otherwise swallow "admin". */
+/* GET /api/rides/admin/driver-scores - admin only (adminOnly list).
+   ⚠️ Above GET /:id like /admin/problems. */
+router.get('/admin/driver-scores', async (req, res) => {
+  try {
+    res.json({ drivers: await ratings.allScores(), low_below: ratings.LOW_SCORE, min_ratings: ratings.MIN_RATINGS });
+  } catch (err) {
+    console.error('driver scores error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 router.get('/admin/problems', async (req, res) => {
   try {
     const status = ['open', 'reviewed', 'all'].includes(req.query.status) ? req.query.status : 'open';
@@ -1234,6 +1246,11 @@ router.get('/:id', async (req, res) => {
        stores it. Not repeating it here keeps it out of one more response. */
     const row = { ...result.rows[0] };
     delete row.ride_pin;
+    /* 18 Oct 2026: the driver's score, shown to her once he has accepted. */
+    if (row.driver_id) {
+      try { const sc = await ratings.driverScore(row.driver_id);
+            row.driver_rating_avg = sc.avg; row.driver_rating_count = sc.count; } catch (e) {}
+    }
     res.json(row);
   } catch (err) {
     console.error('Get ride error:', err);
@@ -1774,6 +1791,53 @@ router.post('/earnings/backfill', async (req, res) => {
 const PROBLEM_CATEGORIES = ['safety', 'driver', 'route', 'price', 'vehicle', 'payment', 'other'];
 const MAX_OPEN_REPORTS_PER_RIDE = 5;
 
+/* ───────────────────────────────────────────────────────────────────────────
+   18 Oct 2026 - DRIVER SCORES. Jeffery: "The passenger can leave a 5 star or 1
+   star." Only the passenger who booked (her private owner key - the same key
+   that opens her own booking page), only on a COMPLETED ride, once per ride.
+   ─────────────────────────────────────────────────────────────────────────── */
+function ownerOf(ride, req) {
+  const given = String((req.body && req.body.token) || req.query.t || req.headers['x-ride-token'] || '');
+  if (!ride.owner_token || !given) return false;
+  const a = Buffer.from(given, 'utf8'), b = Buffer.from(String(ride.owner_token), 'utf8');
+  return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+}
+
+router.post('/:id/rate', async (req, res) => {
+  try {
+    const r = await findRide(req.params.id);
+    if (!r) return res.status(404).json({ error: 'Kous pa jwenn' });
+    if (!ownerOf(r, req)) return res.status(403).json({ error: 'Se sèlman moun ki te kòmande kous la ki ka bay nòt.' });
+    if (r.status !== 'completed') return res.status(409).json({ error: 'Ou ka bay nòt lè kous la fini sèlman.' });
+    if (!r.driver_id) return res.status(409).json({ error: 'Pa gen chofè sou kous sa a.' });
+    const stars = Number((req.body || {}).stars);
+    if (!Number.isInteger(stars) || stars < 1 || stars > 5) return res.status(400).json({ error: 'Chwazi 1 a 5 etwal.' });
+    const comment = String((req.body || {}).comment || '').trim().slice(0, 500) || null;
+    const ins = await pool.query(
+      `INSERT INTO ride_ratings (ride_id, driver_id, stars, comment) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (ride_id) DO NOTHING RETURNING stars`, [r.id, r.driver_id, stars, comment]);
+    if (!ins.rows.length) return res.status(409).json({ error: 'Ou deja bay nòt pou kous sa a.', already: true });
+    console.warn(`[RATING] ${r.tracking_code}: ${stars} star(s)` + (comment ? ' with a comment' : ''));
+    res.status(201).json({ ok: true, stars, message: 'Mèsi! Nòt ou an anrejistre.' });
+  } catch (err) {
+    console.error('rate error:', err);
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
+router.get('/:id/rating', async (req, res) => {
+  try {
+    const r = await findRide(req.params.id);
+    if (!r) return res.status(404).json({ error: 'Kous pa jwenn' });
+    if (!ownerOf(r, req)) return res.status(403).json({ error: 'Forbidden' });
+    const q = await pool.query('SELECT stars, comment, created_at FROM ride_ratings WHERE ride_id = $1', [r.id]);
+    res.json(q.rows.length ? { rated: true, stars: q.rows[0].stars, comment: q.rows[0].comment }
+                           : { rated: false, can_rate: r.status === 'completed' && !!r.driver_id });
+  } catch (err) {
+    res.status(500).json({ error: 'Erè sèvè' });
+  }
+});
+
 async function findRide(param) {
   const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(param);
   const q = await pool.query(
@@ -2192,7 +2256,8 @@ router.get('/:id/track', async (req, res) => {
         photo: ride.driver_photo,
         lat: ride.driver_lat,
         lng: ride.driver_lng,
-        location_updated: ride.last_location_update
+        location_updated: ride.last_location_update,
+        rating: ride.driver_id ? await ratings.driverScore(ride.driver_id).catch(() => null) : null
       } : null,
       price: ride.price,
       /* 🚨 23 Sep: the tracking page could not take money because it was never

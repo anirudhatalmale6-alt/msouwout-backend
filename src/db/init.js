@@ -554,6 +554,16 @@ async function runMigrations(client) {
           cred VARCHAR(16), outcome VARCHAR(20), status INTEGER, note VARCHAR(300)
         );
         CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (at);
+        /* 18 Oct 2026: driver scores - one rating per ride (the ride id IS the
+           key), 1 to 5 stars, from the passenger who booked it. */
+        CREATE TABLE IF NOT EXISTS ride_ratings (
+          ride_id UUID PRIMARY KEY REFERENCES ride_requests(id) ON DELETE CASCADE,
+          driver_id UUID REFERENCES drivers(id) ON DELETE SET NULL,
+          stars SMALLINT NOT NULL CHECK (stars BETWEEN 1 AND 5),
+          comment TEXT,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride_ratings_driver ON ride_ratings (driver_id);
         /* 16 Oct 2026, Jeffery: "Classify both transactions as internal testing
            transactions. Keep the original payment records... excluded from actual
            business revenue, driver earnings, DASH commissions, and Koutye

@@ -140,7 +140,8 @@ tbody tr{border-top:1px solid var(--line)}
       <div style="font-size:.78rem;color:#7F1D1D;margin-bottom:10px">Nothing here is decided automatically — money is involved.</div>
       <div id="attentionBody"></div>
     </div>
-    <div style="margin:-6px 0 16px;text-align:right"><button class="refresh" onclick="endRideByCode()">End an active ride…</button> <button class="refresh" onclick="markInternalTest()">Mark a ride as internal test…</button></div>
+    <div style="margin:-6px 0 16px;text-align:right"><button class="refresh" onclick="endRideByCode()">End an active ride…</button> <button class="refresh" onclick="markInternalTest()">Mark a ride as internal test…</button> <button class="refresh" onclick="showScores()">Driver scores ★</button></div>
+    <div id="scoresBox" class="hidden" style="border:1px solid var(--line,#E3E7EF);background:#fff;border-radius:14px;padding:12px 14px;margin-bottom:16px"></div>
 
     <div class="grid">
       <div class="kpi driver"><div class="label">Driver payouts</div><div class="val" id="kDriver">—</div><div class="note">Due to drivers within 24h</div></div>
@@ -320,6 +321,22 @@ function markInternalTest(){
     .then(function(x){ alert(x.ok?(x.d.ride+' is now an INTERNAL TEST: out of revenue, earnings and DASH; records kept.'+(x.d.earnings_set_aside?' '+x.d.earnings_set_aside+' unpaid earning(s) set aside.':'')):(x.d.error||'Error')); loadAttention(); })
     .catch(function(){ alert('Connection error.'); });
 }
+/* 18 Oct 2026: every driver's passenger score, lowest first. */
+function showScores(){
+  var box=document.getElementById('scoresBox');
+  if(!box.classList.contains('hidden')){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden'); box.textContent='…';
+  fetch('/api/rides/admin/driver-scores',{headers:hdr()}).then(function(r){return r.json();}).then(function(d){
+    var rows=d.drivers||[];
+    box.innerHTML='<div style="font-weight:800;margin-bottom:6px">Driver scores (lowest first)</div>'+
+      (rows.length?rows.map(function(x){
+        return '<div style="padding:6px 0;border-top:1px solid #EEF1F6;font-size:.88rem"><b>'+esc(x.full_name||'Driver')+'</b> — ★ '+Number(x.avg).toFixed(1)+
+          ' · '+Number(x.count)+' rating(s)'+(x.low_count?' · '+Number(x.low_count)+' low':'')+
+          (x.last_comment?'<br><span style="color:#5B6478;font-size:.8rem">“'+esc(x.last_comment)+'”</span>':'')+'</div>';
+      }).join(''):'<div style="color:#5B6478;font-size:.88rem">No ratings yet.</div>')+
+      '<div style="color:#5B6478;font-size:.75rem;margin-top:6px">Flagged under "Needs a person" below ★ '+d.low_below+' with at least '+d.min_ratings+' ratings.</div>';
+  }).catch(function(){ box.textContent='Could not load the scores.'; });
+}
 function endRideByCode(){
   var c = prompt('Tracking code of the ride to end (MW-...):',''); if(!c||!c.trim()) return;
   endRide(c.trim().toUpperCase());
@@ -364,6 +381,14 @@ function loadAttention(){
            '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.driver_name||'driver')+
            ' '+esc(x.driver_phone||'')+' — he cannot take another ride until this is closed</span><br>'+
            '<button class="refresh" style="margin-top:6px" onclick="endRide(\''+esc(x.tracking_code)+'\')">End this ride…</button></div>';
+      });
+      /* 18 Oct 2026: drivers whose passenger score fell below the line */
+      (d.drivers_low_score||[]).forEach(function(x){
+        h+='<div style="padding:8px 0;border-top:1px solid #FECACA">'+
+           '<b>'+esc(x.full_name||'Driver')+'</b> — LOW SCORE: <b>★ '+Number(x.avg).toFixed(1)+'</b> from '+Number(x.count)+' rating(s)'+
+           (x.low_count?' ('+Number(x.low_count)+' of them 1–2 stars)':'')+'<br>'+
+           '<span style="font-size:.78rem;color:#7F1D1D">'+esc(x.phone||'')+(x.last_comment?' · last comment: “'+esc(x.last_comment)+'”':'')+
+           ' — for you to review; nothing happens automatically</span></div>';
       });
       /* 16 Oct 2026: problems reported by a passenger or a driver */
       (d.problems_open||[]).forEach(function(x){

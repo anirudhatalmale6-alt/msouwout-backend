@@ -75,6 +75,8 @@ const ADMIN_ONLY = [
   // Classifying a ride as an internal test takes it out of the business figures.
   ['POST', /^\/api\/rides\/[^/]+\/internal-test$/],
   ['GET', /^\/api\/rides\/admin\/problems$/],
+  // Every driver's score, with names and phone numbers.
+  ['GET', /^\/api\/rides\/admin\/driver-scores$/],
   ['POST', /^\/api\/rides\/problems\/[^/]+\/review$/],
   // The permanent admin activity record (who did what, from where).
   ['GET', /^\/api\/admin-account\/activity$/],

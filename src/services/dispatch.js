@@ -305,9 +305,10 @@ async function problemsOpen() {
 }
 
 async function needsAttention() {
-  const [stranded, stuck, owed, problems] = await Promise.all([
+  const [stranded, stuck, owed, problems, lowScores] = await Promise.all([
     paidAndStranded(), stuckInProgress(), refundsOwed(),
-    problemsOpen().catch(function () { return []; })]);
+    problemsOpen().catch(function () { return []; }),
+    require('./ratings').lowScores().catch(function () { return []; })]);
   return {
     paid_but_no_driver: stranded,
     started_but_never_finished: stuck,
@@ -317,7 +318,10 @@ async function needsAttention() {
     internal_test_to_reconcile_total: owed.filter(function (x) { return x.internal_test; })
       .reduce(function (s, x) { return s + (Number(x.refund_due) || 0); }, 0),
     problems_open: problems,
-    total: stranded.length + stuck.length + owed.length + problems.length
+    /* 18 Oct 2026: drivers whose average fell below the line - for a person
+       to look at. Nothing is decided automatically. */
+    drivers_low_score: lowScores,
+    total: stranded.length + stuck.length + owed.length + problems.length + lowScores.length
   };
 }
 

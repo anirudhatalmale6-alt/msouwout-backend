@@ -543,6 +543,9 @@ router.post('/login', async (req, res) => {
       ORDER BY created_at DESC LIMIT 20
     `, [driver.id]);
 
+    /* 18 Oct 2026: his own score, shown on his dashboard. */
+    try { driver.rating = await require('../services/ratings').driverScore(driver.id); } catch (e) { driver.rating = null; }
+
     res.json({ driver, rides: rides.rows,
       /* The app shows "choose your PIN" on this flag. It is the whole
          migration: every driver enrolls the next time he signs in. */
