@@ -1,0 +1,93 @@
+name: Log window (encrypted)
+
+# 18 Oct 2026: incident review - every app log line in one time window (e.g. a
+# ride that never reached a driver). Repository is PUBLIC: nothing is printed
+# but counts; the lines are encrypted to the developer's public key.
+on:
+  workflow_dispatch:
+    inputs:
+      service_id:
+        description: Render service id
+        required: true
+        default: srv-d7an362dbo4c73a5njt0
+      start:
+        description: UTC start, e.g. 2026-10-17T18:50:00Z
+        required: true
+      end:
+        description: UTC end, e.g. 2026-10-17T19:15:00Z
+        required: true
+
+jobs:
+  window:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SID: ${{ github.event.inputs.service_id }}
+      START: ${{ github.event.inputs.start }}
+      END: ${{ github.event.inputs.end }}
+    steps:
+      - name: Fetch the window
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, time, urllib.request, urllib.parse, urllib.error
+          K = os.environ['RENDER_API_KEY']; SID = os.environ['SID']
+          def get(path, tries=8):
+              for t in range(tries):
+                  try:
+                      q = urllib.request.Request('https://api.render.com/v1' + path, headers={'Authorization': 'Bearer ' + K, 'Accept': 'application/json'})
+                      return json.loads(urllib.request.urlopen(q, timeout=120).read())
+                  except urllib.error.HTTPError as e:
+                      if e.code == 429 and t < tries - 1:
+                          time.sleep(65); continue
+                      raise
+                  except Exception:
+                      time.sleep(5 * (t + 1))
+              raise RuntimeError('Render logs API kept failing')
+          svc = get('/services/' + SID)
+          owner = svc.get('ownerId') or svc.get('service', {}).get('ownerId')
+          out = []; cursor = os.environ['START']; pages = 0
+          while pages < 200:
+              qs = urllib.parse.urlencode([('ownerId', owner), ('resource', SID), ('startTime', cursor), ('endTime', os.environ['END']), ('limit', 100), ('direction', 'forward')])
+              d = get('/logs?' + qs); logs = d.get('logs', []); pages += 1
+              for l in logs:
+                  lab = {x.get('name'): x.get('value') for x in (l.get('labels') or [])}
+                  out.append({'t': l.get('timestamp'), 'type': lab.get('type'), 'msg': (l.get('message') or '')[:600]})
+              if not d.get('hasMore'): break
+              cursor = d.get('nextStartTime') or (logs[-1]['timestamp'] if logs else None)
+              if not cursor: break
+          seen = set(); uniq = []
+          for r in out:
+              k = (r['t'], r['msg'])
+              if k not in seen: seen.add(k); uniq.append(r)
+          open('/tmp/admin_lines.txt', 'w').write('\n'.join(json.dumps(r) for r in uniq))
+          print('lines in window:', len(uniq), '| pages:', pages)
+          PY
+      - name: Encrypt
+        run: |
+          set -euo pipefail
+          cat > /tmp/pub.pem <<'KEY'
+          -----BEGIN PUBLIC KEY-----
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA5N2fPaHb0jDm/6ZIJut2
+          Vm2iyeQt3v207mKDwW0lATbFzEep13RfB+vZ9dJyLRF/qlRD4nujdVFYJJ3MxZLw
+          20BiOE0SxTtTWobXJYHzPiiTNp+++4yy6875ujtMeFeTRQM5F9bahVpztVunkZxJ
+          ynirCZyIQAZAAK03SdfuOrSL7DkIAUlT8ksQH4BP/538sIG8U2R1rXrCEOrP0e1O
+          RVttvBrIoX5j/nOLfKhFNtwsdYryMPhGrKFRgPyUKbpc7dWU0EGIIXa2xTwkLe1w
+          SIAnOWcx0aEzliJB2ZhU99aLUkGDTSkS040mFm7lMusc0Sjr7zAf/ZgL3QjggBJL
+          cf2IjCouVfcNyV5aqFGuDCP3pgRba91P+0WOMzjONIC6d9lUhA1ohF1Mb7F0ljK+
+          dol0/+yduzdUgKnFa4WkP0zF/vjTBwHB7c48Teb2FTE+z/NOy70VzoXbPUfWu3ix
+          R5KZdDWE823AqZzi8kNPAzD8SCUe8iXXzpNbPfT87CcxAgMBAAE=
+          -----END PUBLIC KEY-----
+          KEY
+          sed -i 's/^ *//' /tmp/pub.pem
+          openssl rand -hex 32 > /tmp/k
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/admin_lines.txt -out /tmp/admin_lines.enc -pass file:/tmp/k
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/pub.pem -in /tmp/k -out /tmp/k.enc
+          shred -u /tmp/k /tmp/admin_lines.txt
+          mkdir -p out && mv /tmp/admin_lines.enc /tmp/k.enc out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: log-window
+          path: out/
+          retention-days: 3
