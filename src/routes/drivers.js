@@ -986,6 +986,20 @@ router.post('/push/subscribe', async (req, res) => {
   }
 });
 
+// POST /api/drivers/push/test  { driver_id, endpoint } - a test alert to HIS OWN phone
+router.post('/push/test', async (req, res) => {
+  try {
+    const { driver_id, endpoint } = req.body || {};
+    if (!driver_id || !endpoint) return res.status(400).json({ error: 'driver_id and endpoint are required' });
+    const out = await alerts.testAlert(driver_id, String(endpoint));
+    console.warn('[ALERTS] test alert for driver ' + String(driver_id).slice(0, 8) + ': ' + JSON.stringify(out));
+    res.status(out.sent ? 200 : 409).json(out);
+  } catch (err) {
+    console.error('push test error:', err);
+    res.status(500).json({ error: 'Could not send the test alert' });
+  }
+});
+
 // POST /api/drivers/push/unsubscribe  { endpoint }
 router.post('/push/unsubscribe', async (req, res) => {
   try {

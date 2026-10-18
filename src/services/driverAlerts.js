@@ -139,7 +139,11 @@ async function alertNewRide(ride) {
   let sent = 0, gone = 0;
   await Promise.all(subs.rows.map(async row => {
     try {
-      await webpush.sendNotification(row.subscription, payload, { TTL: 900 });
+      /* 🚨 18 Oct 2026: urgency HIGH. At the default (normal) urgency Android
+         holds web notifications while the phone is idle (Doze) - MW-DJUD3J6
+         on 17 Oct was "notified 1 driver phone" at 18:57:18 and the driver
+         never saw it. A ride request is exactly what HIGH is for. */
+      await webpush.sendNotification(row.subscription, payload, { TTL: 900, urgency: 'high' });
       sent++;
       await pool.query('UPDATE driver_push SET last_ok = NOW(), failures = 0 WHERE endpoint = $1',
                        [row.endpoint]);
@@ -203,7 +207,11 @@ async function alertRideGone(driverId, ride, reason) {
   let sent = 0;
   await Promise.all(subs.rows.map(async row => {
     try {
-      await webpush.sendNotification(row.subscription, payload, { TTL: 900 });
+      /* 🚨 18 Oct 2026: urgency HIGH. At the default (normal) urgency Android
+         holds web notifications while the phone is idle (Doze) - MW-DJUD3J6
+         on 17 Oct was "notified 1 driver phone" at 18:57:18 and the driver
+         never saw it. A ride request is exactly what HIGH is for. */
+      await webpush.sendNotification(row.subscription, payload, { TTL: 900, urgency: 'high' });
       sent++;
       await pool.query('UPDATE driver_push SET last_ok = NOW(), failures = 0 WHERE endpoint = $1',
                        [row.endpoint]);
@@ -220,4 +228,29 @@ async function alertRideGone(driverId, ride, reason) {
   return { sent };
 }
 
-module.exports = { publicKey, subscribe, unsubscribe, alertNewRide, alertRideGone, init };
+/* 18 Oct 2026: a driver checks his OWN phone shows alerts. Only the
+   subscription with this exact endpoint AND this driver is used - the endpoint
+   is an unguessable URL only his browser knows, so nobody can page anyone else. */
+async function testAlert(driverId, endpoint) {
+  await init();
+  const q = await pool.query('SELECT subscription FROM driver_push WHERE driver_id = $1 AND endpoint = $2',
+                             [driverId, endpoint]);
+  if (!q.rows.length) return { sent: 0, reason: 'not_subscribed' };
+  const payload = JSON.stringify({
+    title: '🔔 Tès alèt MsouWout',
+    body: 'Si ou wè mesaj sa a, alèt yo mache. Ou ap resevwa nouvo kous yo konsa.',
+    tag: 'msouwout-test', url: 'https://msouwout.com/driver-login.html' });
+  try {
+    await webpush.sendNotification(q.rows[0].subscription, payload, { TTL: 300, urgency: 'high' });
+    await pool.query('UPDATE driver_push SET last_ok = NOW(), failures = 0 WHERE endpoint = $1', [endpoint]);
+    return { sent: 1 };
+  } catch (err) {
+    if (err.statusCode === 404 || err.statusCode === 410) {
+      await pool.query('DELETE FROM driver_push WHERE endpoint = $1', [endpoint]);
+      return { sent: 0, reason: 'subscription_gone' };
+    }
+    return { sent: 0, reason: 'push_failed', status: err.statusCode || null };
+  }
+}
+
+module.exports = { publicKey, subscribe, unsubscribe, alertNewRide, alertRideGone, init, testAlert };
