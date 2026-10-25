@@ -4,6 +4,73 @@ const pool = require('../db/pool');
 const router = express.Router();
 const { attachDriverAgent } = require('../services/agentReferral');
 
+/* ═══ ONE DRIVER, TWO PLATFORMS (24 Oct 2026, Jeffery) ═════════════════════
+   A MsouWout driver links his MyPlopPlop account by proving, from MyPlopPlop,
+   that he holds this MsouWout account: same phone AND his MsouWout PIN, counted
+   against the same lock as a sign-in. MyPlopPlop's SERVER calls these, behind
+   the INTERNAL_SERVICE_KEY the platforms already share - never a browser.
+   Nothing here changes the MsouWout driver: read-only, plus the PIN counter. */
+const crypto = require('crypto');
+function internalKey(req, res, next) {
+  const expected = process.env.INTERNAL_SERVICE_KEY;
+  if (!expected) return res.status(503).json({ error: 'link_not_configured' });
+  const a = Buffer.from(String(req.get('x-internal-key') || ''));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}
+const LINK_DOCS = ['selfie', 'id', 'license', 'oavct', 'vehicle', 'insurance'];
+function last8(p) { const d = String(p || '').replace(/\D/g, ''); return d.length >= 8 ? d.slice(-8) : ''; }
+
+router.post('/internal/link-verify', internalKey, async (req, res) => {
+  try {
+    const k = last8(req.body && req.body.phone);
+    if (!k) return res.status(400).json({ error: 'bad_phone' });
+    const found = await pool.query(`
+      SELECT id, full_name, phone, vehicle_type, license_plate, license_number, vehicle_make, vehicle_model,
+             vehicle_color, vehicle_year, oavct_number, oavct_expiry, preferred_service, status, is_active,
+             pin_hash, pin_attempts, pin_locked_until
+      FROM drivers WHERE RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 8) = $1`, [k]);
+    if (found.rows.length === 0) return res.status(404).json({ error: 'no_driver' });
+    if (found.rows.length > 1) return res.status(409).json({ error: 'several_drivers' });
+    const d = found.rows[0];
+    const gate = await driverAuth.checkSignIn(d, String((req.body && req.body.pin) || ''));
+    if (gate.outcome === 'enroll') return res.status(409).json({ error: 'no_pin' });
+    if (gate.outcome === 'locked') return res.status(429).json({ error: 'pin_locked', minutes: gate.minutes });
+    if (gate.outcome === 'pin_required' || gate.outcome === 'pin_wrong') {
+      return res.status(401).json({ error: 'pin_wrong', remaining: gate.remaining });
+    }
+    const docs = await pool.query('SELECT doc_type FROM driver_documents WHERE driver_id = $1', [d.id]);
+    res.json({
+      driver: {
+        id: d.id, full_name: d.full_name, phone: d.phone, vehicle_type: d.vehicle_type,
+        license_plate: d.license_plate, license_number: d.license_number, vehicle_make: d.vehicle_make,
+        vehicle_model: d.vehicle_model, vehicle_color: d.vehicle_color, vehicle_year: d.vehicle_year,
+        oavct_number: d.oavct_number, oavct_expiry: d.oavct_expiry, preferred_service: d.preferred_service,
+        status: d.status, is_active: d.is_active !== false
+      },
+      documents: docs.rows.map(r => r.doc_type)
+    });
+  } catch (err) {
+    console.error('link-verify error:', err.message);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/* One document image, for the MyPlopPlop administrator who approves the
+   delivery profile - so he decides with the photo and licence in front of him. */
+router.get('/internal/:id/document/:type', internalKey, async (req, res) => {
+  try {
+    const t = String(req.params.type || '').toLowerCase();
+    if (!LINK_DOCS.includes(t)) return res.status(400).json({ error: 'bad_type' });
+    const r = await pool.query('SELECT mime, image_data FROM driver_documents WHERE driver_id = $1 AND doc_type = $2', [req.params.id, t]);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'no_document' });
+    res.json({ mime: r.rows[0].mime, data_url: 'data:' + r.rows[0].mime + ';base64,' + r.rows[0].image_data });
+  } catch (err) {
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
 // POST /api/drivers - Register a new driver (public)
 router.post('/', async (req, res) => {
   try {
