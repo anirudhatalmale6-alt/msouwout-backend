@@ -1,0 +1,23 @@
+name: Probe internal link (status codes only)
+
+# 1 Nov 2026: proves the shared INTERNAL_SERVICE_KEY secret opens the MsouWout
+# console routes. Prints HTTP status codes and counts only - never data.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      K: ${{ secrets.INTERNAL_SERVICE_KEY }}
+    steps:
+      - name: MsouWout console stats with the shared key
+        run: |
+          set -u
+          code=$(curl -s -m 90 -o /tmp/o.json -w '%{http_code}' -H "x-internal-key: $K" https://msouwout-backend.onrender.com/api/drivers/internal/console-stats/agents)
+          echo "with key: $code"
+          python3 -c "import json;d=json.load(open('/tmp/o.json'));print('agents rows:',len(d.get('agents',[])),'uncredited:',d.get('uncredited'))" || true
+          bad=$(curl -s -m 90 -o /dev/null -w '%{http_code}' -H "x-internal-key: wrong" https://msouwout-backend.onrender.com/api/drivers/internal/console-stats/agents)
+          echo "wrong key: $bad"
+          [ "$code" = "200" ] && [ "$bad" = "401" ]
