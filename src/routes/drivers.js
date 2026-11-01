@@ -171,6 +171,28 @@ router.post('/', async (req, res) => {
   }
 });
 
+/* POST /api/drivers/status-batch (public, 1 Nov 2026) - the LajanMaker app asks
+   what became of the drivers ITS Ajan registered, by the driver ids the signup
+   returned to that phone. Ids only (unguessable UUIDs), at most 100, and the
+   answer carries no name, phone or document: status, the rejection reason the
+   driver must fix, and which document photos actually arrived. */
+const STATUS_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+router.post('/status-batch', async (req, res) => {
+  try {
+    const ids = [...new Set(((req.body && req.body.ids) || []).map(String))].filter(x => STATUS_ID_RE.test(x)).slice(0, 100);
+    if (!ids.length) return res.json({ drivers: [] });
+    const r = await pool.query(`
+      SELECT d.id, d.status, d.is_verified, d.rejection_reason, d.reviewed_at, d.referral_attached,
+             COALESCE((SELECT array_agg(doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS docs
+        FROM drivers d WHERE d.id = ANY($1::uuid[])`, [ids]);
+    res.set('Cache-Control', 'no-store');
+    res.json({ drivers: r.rows });
+  } catch (e) {
+    console.error('status-batch error:', e.message);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
 // POST /api/drivers/:id/documents - upload/replace one verification document (public,
 // used by the signup form). Body: { doc_type, image_data (base64 data URL or raw), mime }.
 // Stored in the database so it survives Render redeploys (the filesystem is ephemeral).
