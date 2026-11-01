@@ -120,6 +120,7 @@ async function alertNewRide(ride) {
        FROM driver_push p
        JOIN drivers d ON d.id = p.driver_id
       WHERE d.status = 'approved' AND d.is_verified = true AND d.is_active = true
+        AND COALESCE(d.preferred_service, 'both') <> 'delivery'
         AND COALESCE(d.is_test_account, false) = $1
         AND p.failures < 5`, [wantTest]);
   if (!subs.rows.length) return { sent: 0, reason: 'nobody_subscribed' };

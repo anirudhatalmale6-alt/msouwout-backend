@@ -29,7 +29,7 @@ router.post('/internal/link-verify', internalKey, async (req, res) => {
     const found = await pool.query(`
       SELECT id, full_name, phone, vehicle_type, license_plate, license_number, vehicle_make, vehicle_model,
              vehicle_color, vehicle_year, oavct_number, oavct_expiry, preferred_service, status, is_active,
-             pin_hash, pin_attempts, pin_locked_until
+             pin_hash, pin_attempts, pin_locked_until, reviewed_by
       FROM drivers WHERE RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 8) = $1`, [k]);
     if (found.rows.length === 0) return res.status(404).json({ error: 'no_driver' });
     if (found.rows.length > 1) return res.status(409).json({ error: 'several_drivers' });
@@ -47,12 +47,28 @@ router.post('/internal/link-verify', internalKey, async (req, res) => {
         license_plate: d.license_plate, license_number: d.license_number, vehicle_make: d.vehicle_make,
         vehicle_model: d.vehicle_model, vehicle_color: d.vehicle_color, vehicle_year: d.vehicle_year,
         oavct_number: d.oavct_number, oavct_expiry: d.oavct_expiry, preferred_service: d.preferred_service,
-        status: d.status, is_active: d.is_active !== false
+        status: d.status, is_active: d.is_active !== false, reviewed_by: d.reviewed_by || ''
       },
       documents: docs.rows.map(r => r.doc_type)
     });
   } catch (err) {
     console.error('link-verify error:', err.message);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/* 1 Nov 2026 (Step 1, ONE verification): MyPlopPlop asks whether a driver it
+   activated on the strength of a MsouWout approval is STILL approved, so a
+   driver Jennifer suspends or rejects here stops getting deliveries there too. */
+router.get('/internal/:id/status', internalKey, async (req, res) => {
+  try {
+    if (!STATUS_ID_RE.test(String(req.params.id))) return res.status(404).json({ error: 'no_driver' });
+    const r = await pool.query('SELECT id, status, is_active, reviewed_by, reviewed_at, preferred_service FROM drivers WHERE id = $1', [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'no_driver' });
+    const d = r.rows[0];
+    res.json({ id: d.id, status: d.status, is_active: d.is_active !== false, reviewed_by: d.reviewed_by || '', reviewed_at: d.reviewed_at,
+               preferred_service: d.preferred_service || 'both' });
+  } catch (err) {
     res.status(500).json({ error: 'server_error' });
   }
 });
@@ -1228,11 +1244,15 @@ router.get('/internal/console/:id', internalKey, async (req, res) => {
 router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
   const who = by(req);
   if (!who) return res.status(400).json({ error: 'name_required' });
+  /* What Jennifer approves him FOR (defaults to what he asked for): KOUS =
+     MsouWout rides, LIVREZON = MyPlopPlop deliveries, TOUDE = both. */
+  const svc = ['ride', 'delivery', 'both'].includes(req.body && req.body.service) ? req.body.service : null;
   try {
     const r = await pool.query(`
       UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
-             rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = $2
-      WHERE id = $1 RETURNING id, full_name, phone, status, preferred_service, vehicle_type`, [req.params.id, 'console:' + who]);
+             rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = $2,
+             preferred_service = COALESCE($3, preferred_service, 'both')
+      WHERE id = $1 RETURNING id, full_name, phone, status, preferred_service, vehicle_type`, [req.params.id, 'console:' + who, svc]);
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     console.log('[CONSOLE] driver ' + req.params.id + ' APPROVED by ' + who);
     res.json({ driver: r.rows[0] });

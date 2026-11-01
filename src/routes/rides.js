@@ -1112,9 +1112,11 @@ router.get('/available', async (req, res) => {
        possible. */
     let boardIsTest = false;
     if (req.query.driver_id && /^[0-9a-f-]{36}$/i.test(String(req.query.driver_id))) {
-      const who = await pool.query('SELECT is_test_account FROM drivers WHERE id = $1',
+      const who = await pool.query('SELECT is_test_account, preferred_service FROM drivers WHERE id = $1',
                                    [req.query.driver_id]);
       boardIsTest = !!(who.rows.length && who.rows[0].is_test_account);
+      /* LIVREZON only: no passengers on his board (accepting is refused anyway) */
+      if (who.rows.length && who.rows[0].preferred_service === 'delivery') where += ' AND false';
     }
     params.push(boardIsTest);
     where += ` AND COALESCE(r.is_test,false) = $${params.length}`;
@@ -1302,6 +1304,11 @@ router.patch('/:id/accept', async (req, res) => {
 
     const driver = await pool.query('SELECT * FROM drivers WHERE id = $1 AND status = $2', [driver_id, 'approved']);
     if (driver.rows.length === 0) return res.status(404).json({ error: 'Chofè pa jwenn oswa pa apwouve' });
+    /* 1 Nov 2026, Jeffery: one approval activates the services the driver
+       registered for - KOUS, LIVREZON or TOUDE. LIVREZON only = no passengers. */
+    if (driver.rows[0].preferred_service === 'delivery') {
+      return res.status(403).json({ error: 'Ou apwouve pou LIVREZON sèlman, pa pou kous moun.' });
+    }
 
     /* 🚨 28 Sep, Jeffery: "Do not allow +509 0000 0000 to receive or accept real
        customer rides." The account exists because Apple rejected 1.0(7) when a
