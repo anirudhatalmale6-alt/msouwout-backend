@@ -82,6 +82,10 @@ router.post('/', async (req, res) => {
     if (!full_name || !phone || !vehicle_type) {
       return res.status(400).json({ error: 'full_name, phone, and vehicle_type are required' });
     }
+    /* 1 Nov 2026 (Step 1, one registration): the form now asks KOUS / LIVREZON /
+       TOUDE. Anything else would fail the enum and lose the whole signup. */
+    const service = ['ride', 'delivery', 'both'].includes(preferred_service) ? preferred_service : 'both';
+    const typedCode = String(referral_code || '').trim().slice(0, 50) || null;
 
     // Check for duplicate phone
     const existing = await pool.query('SELECT id FROM drivers WHERE phone = $1', [phone]);
@@ -96,16 +100,16 @@ router.post('/', async (req, res) => {
       INSERT INTO drivers (full_name, phone, email, whatsapp, city, vehicle_type, license_plate,
                           license_number, vehicle_make, vehicle_model, vehicle_color,
                           oavct_number, oavct_expiry, preferred_zones, preferred_service,
-                          referral_partner, referral_code, syndicate, vehicle_year, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'pending')
+                          referral_partner, referral_code, syndicate, vehicle_year, status, referral_typed)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'pending', $17)
       RETURNING id, full_name, phone, vehicle_type, status, created_at
     `, [
       full_name, phone, email || null, whatsapp || null, city || null, vehicle_type,
       license_plate || null, license_number || null,
       vehicle_make || null, vehicle_model || null, vehicle_color || null,
       oavct_number || null, expiry,
-      preferred_zones || null, preferred_service || 'both',
-      referral_partner || null, referral_code || null,
+      preferred_zones || null, service,
+      referral_partner || null, typedCode,
       syndicate || null, Number.isFinite(yearInt) ? yearInt : null
     ]);
 
@@ -132,8 +136,8 @@ router.post('/', async (req, res) => {
        driver row exists and never allowed to fail the signup - see
        services/agentReferral.js. */
     let ajan = null;
-    if (referral_code) {
-      ajan = await attachDriverAgent({ code: referral_code, name: full_name, phone });
+    if (typedCode) {
+      ajan = await attachDriverAgent({ code: typedCode, name: full_name, phone });
       if (ajan.ok && ajan.koutyeCode) {
         /* An Ajan who works for an organisation brings the driver to THAT
            organisation, whatever partner was picked in the dropdown - the
@@ -141,12 +145,15 @@ router.post('/', async (req, res) => {
            leaves the dropdown choice alone. */
         const org = ajan.organization || null;
         await pool.query(
-          `UPDATE drivers SET referral_code = $1,
+          `UPDATE drivers SET referral_code = $1, referral_attached = true,
                   referral_partner = COALESCE($2, referral_partner)
             WHERE id = $3`,
           [ajan.koutyeCode, org, created.id]
         ).catch(e => console.warn('[AJAN] could not store attribution on driver ' + created.id + ': ' + e.message));
       }
+      /* The engine answered (real code or not): no retry needed. When it did
+         NOT answer, retryAjanCredits() below tries again later. */
+      if (ajan.ok) await pool.query('UPDATE drivers SET referral_checked_at = NOW() WHERE id = $1', [created.id]).catch(() => {});
     }
 
     res.status(201).json({
@@ -1123,6 +1130,141 @@ router.post('/:id/pin/reset', async (req, res) => {
     console.error('PIN reset error:', err);
     res.status(500).json({ error: 'Erè sèvè' });
   }
+});
+
+/* ═══ AJAN CREDIT THAT IS NEVER LOST (1 Nov 2026) ═══════════════════════════
+   Jeffery: "Every driver recruited by a LajanMaker Ajan must appear
+   automatically in MsouWout and be credited to the correct Ajan."
+   The engine lives on another free server that sleeps; a signup that reached
+   it while it was waking up kept the code as typed and the credit was lost.
+   Any driver whose code the engine never ANSWERED for is tried again here,
+   every 10 minutes, for 30 days. */
+async function creditDriver(row) {
+  const code = row.referral_typed || row.referral_code;
+  if (!code) return { ok: false, reason: 'no_code' };
+  const ajan = await attachDriverAgent({ code, name: row.full_name, phone: row.phone });
+  if (!ajan.ok) return ajan;
+  if (ajan.koutyeCode) {
+    await pool.query(
+      `UPDATE drivers SET referral_code = $1, referral_attached = true, referral_checked_at = NOW(),
+              referral_partner = COALESCE($2, referral_partner) WHERE id = $3`,
+      [ajan.koutyeCode, ajan.organization || null, row.id]);
+  } else {
+    await pool.query('UPDATE drivers SET referral_checked_at = NOW() WHERE id = $1', [row.id]);
+  }
+  return ajan;
+}
+let retryBusy = false;
+async function retryAjanCredits() {
+  if (retryBusy) return; retryBusy = true;
+  try {
+    const r = await pool.query(
+      `SELECT id, full_name, phone, referral_code, referral_typed FROM drivers
+        WHERE COALESCE(referral_typed, referral_code) IS NOT NULL AND referral_attached = false
+          AND referral_checked_at IS NULL AND created_at > NOW() - INTERVAL '30 days'
+        ORDER BY created_at LIMIT 20`);
+    for (const row of r.rows) { await creditDriver(row).catch(() => {}); }
+  } catch (e) { /* the table may be mid-migration on a first boot */ }
+  finally { retryBusy = false; }
+}
+if (process.env.NODE_ENV !== 'test') {
+  setTimeout(retryAjanCredits, 60 * 1000).unref();
+  setInterval(retryAjanCredits, 10 * 60 * 1000).unref();
+}
+
+/* ═══ JENNIFER'S APPROVAL CONSOLE (1 Nov 2026) ═════════════════════════════
+   Approving a driver used to need Jeffery's own admin login (password + the
+   code on his phone), so the person who checks the documents could not
+   approve. The HaitiBiznis console (her console code, checked on THAT server)
+   now calls these, server to server, behind the shared INTERNAL_SERVICE_KEY -
+   never a browser. Every decision records who made it. */
+function by(req) { return String((req.body && req.body.by) || '').trim().slice(0, 60); }
+const CONSOLE_COLS = `d.id, d.full_name, d.phone, d.whatsapp, d.city, d.vehicle_type, d.vehicle_make, d.vehicle_model,
+  d.vehicle_year, d.vehicle_color, d.license_plate, d.license_number, d.oavct_number, d.oavct_expiry,
+  d.referral_partner, d.referral_code, d.referral_typed, d.referral_attached, d.preferred_service,
+  d.status, d.is_verified, d.rejection_reason, d.reviewed_by, d.reviewed_at, d.created_at,
+  (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id)::int AS doc_count`;
+router.get('/internal/console/list', internalKey, async (req, res) => {
+  try {
+    const st = String(req.query.status || 'pending');
+    const params = []; let where = '';
+    if (st !== 'all') { params.push(st); where = 'WHERE d.status = $1'; }
+    const r = await pool.query(`SELECT ${CONSOLE_COLS} FROM drivers d ${where} ORDER BY d.created_at DESC LIMIT 300`, params);
+    const c = await pool.query(`SELECT status, COUNT(*)::int AS n FROM drivers GROUP BY status`);
+    const counts = {}; c.rows.forEach(x => { counts[x.status] = x.n; });
+    res.json({ drivers: r.rows, counts });
+  } catch (e) { res.status(500).json({ error: 'list_failed' }); }
+});
+router.get('/internal/console/:id', internalKey, async (req, res) => {
+  try {
+    const d = await pool.query(`SELECT ${CONSOLE_COLS} FROM drivers d WHERE d.id = $1`, [req.params.id]);
+    if (!d.rows.length) return res.status(404).json({ error: 'not_found' });
+    const docs = await pool.query('SELECT doc_type, mime, image_data FROM driver_documents WHERE driver_id = $1', [req.params.id]);
+    res.json({ driver: d.rows[0], documents: docs.rows.map(x => ({ doc_type: x.doc_type, data_url: 'data:' + x.mime + ';base64,' + x.image_data })) });
+  } catch (e) { res.status(400).json({ error: 'not_found' }); }
+});
+router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
+  const who = by(req);
+  if (!who) return res.status(400).json({ error: 'name_required' });
+  try {
+    const r = await pool.query(`
+      UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
+             rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = $2
+      WHERE id = $1 RETURNING id, full_name, phone, status, preferred_service, vehicle_type`, [req.params.id, 'console:' + who]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+    console.log('[CONSOLE] driver ' + req.params.id + ' APPROVED by ' + who);
+    res.json({ driver: r.rows[0] });
+  } catch (e) { res.status(400).json({ error: 'approve_failed' }); }
+});
+router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
+  const who = by(req);
+  const reason = String((req.body && req.body.reason) || '').trim().slice(0, 300);
+  if (!who || !reason) return res.status(400).json({ error: 'name_and_reason_required' });
+  try {
+    const r = await pool.query(`
+      UPDATE drivers SET status = 'rejected', is_verified = false, is_active = false,
+             rejection_reason = $3, reviewed_at = NOW(), reviewed_by = $2
+      WHERE id = $1 RETURNING id, full_name, status`, [req.params.id, 'console:' + who, reason]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+    console.log('[CONSOLE] driver ' + req.params.id + ' REJECTED by ' + who);
+    res.json({ driver: r.rows[0] });
+  } catch (e) { res.status(400).json({ error: 'reject_failed' }); }
+});
+/* Set (or correct) the Ajan who recruited a driver - e.g. a driver who came
+   through the banner QR and typed no code. The engine must accept the code;
+   nothing is changed if it does not. */
+router.post('/internal/console/:id/agent', internalKey, async (req, res) => {
+  const who = by(req);
+  const code = String((req.body && req.body.code) || '').trim().slice(0, 50);
+  if (!who || !code) return res.status(400).json({ error: 'name_and_code_required' });
+  try {
+    const d = await pool.query('SELECT id, full_name, phone, referral_code, referral_attached FROM drivers WHERE id = $1', [req.params.id]);
+    if (!d.rows.length) return res.status(404).json({ error: 'not_found' });
+    const row = d.rows[0];
+    if (row.referral_attached) return res.status(409).json({ error: 'already_credited', code: row.referral_code });
+    const ajan = await attachDriverAgent({ code, name: row.full_name, phone: row.phone });
+    if (!ajan.ok) return res.status(503).json({ error: 'engine_unavailable' });
+    if (!ajan.koutyeCode) return res.status(400).json({ error: 'code_not_found' });
+    await pool.query(
+      `UPDATE drivers SET referral_typed = $1, referral_code = $2, referral_attached = true, referral_checked_at = NOW(),
+              referral_partner = COALESCE($3, referral_partner) WHERE id = $4`,
+      [code, ajan.koutyeCode, ajan.organization || null, row.id]);
+    console.log('[CONSOLE] driver ' + row.id + ' credited to ' + ajan.koutyeCode + ' by ' + who);
+    res.json({ ok: true, code: ajan.koutyeCode, organization: ajan.organization || '' });
+  } catch (e) { res.status(400).json({ error: 'agent_failed' }); }
+});
+/* Drivers per Ajan code: registered and VERIFIED (approved) - what the 1 000 HTG
+   per 5 verified drivers is counted on. Only credits the engine confirmed. */
+router.get('/internal/console-stats/agents', internalKey, async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT referral_code AS code, COUNT(*)::int AS registered,
+             COUNT(*) FILTER (WHERE status = 'approved')::int AS verified
+        FROM drivers WHERE referral_attached = true AND referral_code IS NOT NULL
+       GROUP BY referral_code ORDER BY verified DESC, registered DESC`);
+    const u = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers WHERE referral_attached = false AND status <> 'rejected'`);
+    res.json({ agents: r.rows, uncredited: u.rows[0].n });
+  } catch (e) { res.status(500).json({ error: 'stats_failed' }); }
 });
 
 module.exports = router;

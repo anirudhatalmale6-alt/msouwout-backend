@@ -787,6 +787,11 @@ async function runMigrations(client) {
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS syndicate VARCHAR(50);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS preferred_zones TEXT;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS vehicle_year INTEGER;
+        -- 1 Nov 2026: the Ajan code exactly as typed, and whether the Ajan engine
+        -- has really recorded the driver (a cold engine used to lose the credit).
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_typed VARCHAR(50);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_attached BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_checked_at TIMESTAMP WITH TIME ZONE;
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
