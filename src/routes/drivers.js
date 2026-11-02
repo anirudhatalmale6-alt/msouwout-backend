@@ -198,7 +198,7 @@ router.post('/status-batch', async (req, res) => {
     const ids = [...new Set(((req.body && req.body.ids) || []).map(String))].filter(x => STATUS_ID_RE.test(x)).slice(0, 100);
     if (!ids.length) return res.json({ drivers: [] });
     const r = await pool.query(`
-      SELECT d.id, d.status, d.is_verified, d.rejection_reason, d.reviewed_at, d.referral_attached,
+      SELECT d.id, d.status, d.is_verified, d.rejection_reason, d.reviewed_at, d.referral_attached, d.fix_docs, d.fix_note, d.oavct_expiry,
              COALESCE((SELECT array_agg(doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS docs
         FROM drivers d WHERE d.id = ANY($1::uuid[])`, [ids]);
     res.set('Cache-Control', 'no-store');
@@ -245,6 +245,8 @@ router.post('/:id/documents', async (req, res) => {
       ON CONFLICT (driver_id, doc_type)
       DO UPDATE SET mime = EXCLUDED.mime, image_data = EXCLUDED.image_data, created_at = NOW()
     `, [id, doc_type, mime, b64]);
+    /* the photo Jennifer asked to redo has been sent again */
+    await pool.query(`UPDATE drivers SET fix_docs = NULLIF(array_remove(fix_docs, $2), '{}') WHERE id = $1 AND $2 = ANY(fix_docs)`, [id, doc_type]).catch(() => {});
 
     res.status(201).json({ saved: true, doc_type });
   } catch (err) {
@@ -1220,8 +1222,9 @@ function by(req) { return String((req.body && req.body.by) || '').trim().slice(0
 const CONSOLE_COLS = `d.id, d.full_name, d.phone, d.whatsapp, d.city, d.vehicle_type, d.vehicle_make, d.vehicle_model,
   d.vehicle_year, d.vehicle_color, d.license_plate, d.license_number, d.oavct_number, d.oavct_expiry,
   d.referral_partner, d.referral_code, d.referral_typed, d.referral_attached, d.preferred_service,
-  d.status, d.is_verified, d.rejection_reason, d.reviewed_by, d.reviewed_at, d.created_at,
-  (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id)::int AS doc_count`;
+  d.status, d.is_verified, d.rejection_reason, d.reviewed_by, d.reviewed_at, d.created_at, d.fix_docs, d.fix_note,
+  (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id)::int AS doc_count,
+  COALESCE((SELECT array_agg(dd.doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS doc_types`;
 router.get('/internal/console/list', internalKey, async (req, res) => {
   try {
     const st = String(req.query.status || 'pending');
@@ -1248,6 +1251,20 @@ router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
      MsouWout rides, LIVREZON = MyPlopPlop deliveries, TOUDE = both. */
   const svc = ['ride', 'delivery', 'both'].includes(req.body && req.body.service) ? req.body.service : null;
   try {
+    /* 1 Nov 2026, Jeffery: "Expired or missing mandatory documents should prevent
+       approval until corrected." Checked HERE, not only on her screen. */
+    const g = await pool.query(`SELECT status, oavct_expiry, fix_docs,
+        COALESCE((SELECT array_agg(doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS have
+        FROM drivers d WHERE d.id = $1`, [req.params.id]);
+    if (!g.rows.length) return res.status(404).json({ error: 'not_found' });
+    const have = g.rows[0].have || [], exp = g.rows[0].oavct_expiry;
+    const missing = REQUIRED_DOCS.filter(t => !have.includes(t));
+    const toFix = g.rows[0].fix_docs || [];
+    const oavct = !exp ? 'missing' : (new Date(exp).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok');
+    /* an already-approved driver whose services are being changed is not re-examined */
+    if (g.rows[0].status !== 'approved' && (missing.length || toFix.length || oavct !== 'ok')) {
+      return res.status(409).json({ error: 'not_ready', missing, to_fix: toFix, oavct });
+    }
     const r = await pool.query(`
       UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
              rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = $2,
@@ -1271,6 +1288,52 @@ router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
     console.log('[CONSOLE] driver ' + req.params.id + ' REJECTED by ' + who);
     res.json({ driver: r.rows[0] });
   } catch (e) { res.status(400).json({ error: 'reject_failed' }); }
+});
+const REQUIRED_DOCS = ['selfie', 'id', 'license', 'oavct', 'vehicle'];
+/* Send back one or more documents to redo (status stays PENDING, registration,
+   Ajan and the other photos untouched). */
+router.post('/internal/console/:id/fix', internalKey, async (req, res) => {
+  const who = by(req);
+  const docs = [...new Set(((req.body && req.body.docs) || []).map(String))].filter(t => DOC_TYPES.includes(t));
+  const note = String((req.body && req.body.note) || '').trim().slice(0, 300);
+  if (!who || !docs.length) return res.status(400).json({ error: 'name_and_docs_required' });
+  try {
+    const r = await pool.query(`UPDATE drivers SET fix_docs = $2, fix_note = $3, fix_by = $4, fix_at = NOW()
+        WHERE id = $1 AND status = 'pending' RETURNING id, fix_docs, fix_note`, [req.params.id, docs, note || null, 'console:' + who]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+    console.log('[CONSOLE] driver ' + req.params.id + ' documents to redo ' + docs.join(',') + ' by ' + who);
+    res.json(r.rows[0]);
+  } catch (e) { res.status(400).json({ error: 'fix_failed' }); }
+});
+/* The OAVCT expiry date as Jennifer reads it on the photo. */
+router.post('/internal/console/:id/oavct', internalKey, async (req, res) => {
+  const who = by(req);
+  const exp = String((req.body && req.body.expiry) || '');
+  if (!who || !/^\d{4}-\d{2}-\d{2}$/.test(exp) || isNaN(Date.parse(exp))) return res.status(400).json({ error: 'name_and_date_required' });
+  try {
+    const r = await pool.query(`UPDATE drivers SET oavct_expiry = $2 WHERE id = $1 RETURNING id, oavct_expiry`, [req.params.id, exp]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+    console.log('[CONSOLE] driver ' + req.params.id + ' OAVCT expiry ' + exp + ' by ' + who);
+    res.json(r.rows[0]);
+  } catch (e) { res.status(400).json({ error: 'oavct_failed' }); }
+});
+/* Jennifer replaces one photo herself (e.g. the Ajan sent it to her on WhatsApp). */
+router.post('/internal/console/:id/document', internalKey, async (req, res) => {
+  const who = by(req);
+  const t = String((req.body && req.body.doc_type) || '').toLowerCase();
+  const m = /^data:(image\/[a-z+.-]+);base64,(.+)$/s.exec(String((req.body && req.body.image_data) || ''));
+  if (!who || !DOC_TYPES.includes(t) || !m) return res.status(400).json({ error: 'name_type_image_required' });
+  if (m[2].length > 4 * 1024 * 1024) return res.status(413).json({ error: 'too_large' });
+  try {
+    const d = await pool.query('SELECT id FROM drivers WHERE id = $1', [req.params.id]);
+    if (!d.rows.length) return res.status(404).json({ error: 'not_found' });
+    await pool.query(`INSERT INTO driver_documents (driver_id, doc_type, mime, image_data) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (driver_id, doc_type) DO UPDATE SET mime = EXCLUDED.mime, image_data = EXCLUDED.image_data, created_at = NOW()`,
+      [req.params.id, t, m[1], m[2]]);
+    await pool.query(`UPDATE drivers SET fix_docs = NULLIF(array_remove(fix_docs, $2), '{}') WHERE id = $1`, [req.params.id, t]);
+    console.log('[CONSOLE] driver ' + req.params.id + ' document ' + t + ' replaced by ' + who);
+    res.json({ ok: true, doc_type: t });
+  } catch (e) { res.status(400).json({ error: 'document_failed' }); }
 });
 /* Set (or correct) the Ajan who recruited a driver - e.g. a driver who came
    through the banner QR and typed no code. The engine must accept the code;

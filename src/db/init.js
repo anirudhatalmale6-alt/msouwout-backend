@@ -792,6 +792,12 @@ async function runMigrations(client) {
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_typed VARCHAR(50);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_attached BOOLEAN NOT NULL DEFAULT false;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS referral_checked_at TIMESTAMP WITH TIME ZONE;
+        -- 1 Nov 2026 (night): Jennifer sends back ONE document to redo instead of
+        -- rejecting the whole registration; cleared as each one is uploaded again.
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_docs TEXT[];
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_note TEXT;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_by VARCHAR(80);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_at TIMESTAMP WITH TIME ZONE;
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
