@@ -798,6 +798,12 @@ async function runMigrations(client) {
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_note TEXT;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_by VARCHAR(80);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS fix_at TIMESTAMP WITH TIME ZONE;
+        -- 2 Nov 2026: the welcome message after approval - sent ONCE, and how.
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_status VARCHAR(20);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_channel VARCHAR(30);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_by VARCHAR(80);
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_note TEXT;
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);

@@ -1223,6 +1223,7 @@ const CONSOLE_COLS = `d.id, d.full_name, d.phone, d.whatsapp, d.city, d.vehicle_
   d.vehicle_year, d.vehicle_color, d.license_plate, d.license_number, d.oavct_number, d.oavct_expiry,
   d.referral_partner, d.referral_code, d.referral_typed, d.referral_attached, d.preferred_service,
   d.status, d.is_verified, d.rejection_reason, d.reviewed_by, d.reviewed_at, d.created_at, d.fix_docs, d.fix_note,
+  d.welcome_status, d.welcome_channel, d.welcome_by, d.welcome_at, d.welcome_note,
   (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id)::int AS doc_count,
   COALESCE((SELECT array_agg(dd.doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS doc_types`;
 router.get('/internal/console/list', internalKey, async (req, res) => {
@@ -1269,10 +1270,11 @@ router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
       UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
              rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = $2,
              preferred_service = COALESCE($3, preferred_service, 'both')
-      WHERE id = $1 RETURNING id, full_name, phone, status, preferred_service, vehicle_type`, [req.params.id, 'console:' + who, svc]);
+      WHERE id = $1 RETURNING id, full_name, phone, status, preferred_service, vehicle_type, welcome_status`, [req.params.id, 'console:' + who, svc]);
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     console.log('[CONSOLE] driver ' + req.params.id + ' APPROVED by ' + who);
-    res.json({ driver: r.rows[0] });
+    /* was: so HaitiBiznis sends the welcome only on a NEW approval, not on a change of services */
+    res.json({ driver: r.rows[0], was: g.rows[0].status });
   } catch (e) { res.status(400).json({ error: 'approve_failed' }); }
 });
 router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
@@ -1334,6 +1336,30 @@ router.post('/internal/console/:id/document', internalKey, async (req, res) => {
     console.log('[CONSOLE] driver ' + req.params.id + ' document ' + t + ' replaced by ' + who);
     res.json({ ok: true, doc_type: t });
   } catch (e) { res.status(400).json({ error: 'document_failed' }); }
+});
+/* The welcome message after approval (Jeffery, 2 Nov): recorded ONCE. A second
+   "sent" is refused, so a double tap or a retry can never message twice and the
+   dashboard always shows the first, real, sending. 'manual_needed' / 'failed'
+   can still become 'sent'. */
+router.post('/internal/console/:id/welcome', internalKey, async (req, res) => {
+  const who = by(req) || 'system';
+  const b = req.body || {};
+  const status = ['sent', 'manual_needed', 'failed'].includes(b.status) ? b.status : null;
+  const channel = ['whatsapp_auto', 'whatsapp_manual', 'none'].includes(b.channel) ? b.channel : null;
+  if (!status || !channel) return res.status(400).json({ error: 'status_and_channel_required' });
+  try {
+    const r = await pool.query(`UPDATE drivers SET welcome_status = $2, welcome_channel = $3, welcome_by = $4, welcome_at = NOW(), welcome_note = $5
+        WHERE id = $1 AND status = 'approved' AND (welcome_status IS NULL OR welcome_status <> 'sent')
+        RETURNING id, welcome_status, welcome_channel, welcome_by, welcome_at`,
+      [req.params.id, status, channel, status === 'sent' && channel === 'whatsapp_manual' ? 'console:' + who : who, String(b.note || '').slice(0, 200) || null]);
+    if (!r.rows.length) {
+      const c = await pool.query('SELECT welcome_status, welcome_channel, welcome_by, welcome_at FROM drivers WHERE id = $1', [req.params.id]);
+      if (!c.rows.length) return res.status(404).json({ error: 'not_found' });
+      return res.status(409).json(Object.assign({ error: 'already_sent' }, c.rows[0]));
+    }
+    console.log('[CONSOLE] driver ' + req.params.id + ' welcome ' + status + ' via ' + channel + ' by ' + who);
+    res.json(r.rows[0]);
+  } catch (e) { res.status(400).json({ error: 'welcome_failed' }); }
 });
 /* Set (or correct) the Ajan who recruited a driver - e.g. a driver who came
    through the banner QR and typed no code. The engine must accept the code;
