@@ -370,6 +370,9 @@ router.get('/admin/:id', adminPass, async (req, res) => {
 // POST /api/drivers/admin/:id/approve
 router.post('/admin/:id/approve', adminPass, async (req, res) => {
   try {
+    const g = await approvalGate(req.params.id).catch(() => null);
+    if (!g) return res.status(404).json({ error: 'Driver not found' });
+    if (g.status !== 'approved' && !g.ok) return res.status(409).json({ error: 'not_ready', missing: g.missing, to_fix: g.to_fix, oavct: g.oavct });
     const r = await pool.query(`
       UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
              rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = 'admin'
@@ -568,6 +571,8 @@ router.get('/presence/summary', adminPass, async (req, res) => {
 router.patch('/:id/approve', async (req, res) => {
   try {
     const { id } = req.params;
+    const g = await approvalGate(id).catch(() => null);
+    if (g && g.status === 'pending' && !g.ok) return res.status(409).json({ error: 'not_ready', missing: g.missing, to_fix: g.to_fix, oavct: g.oavct });
     const result = await pool.query(`
       UPDATE drivers SET status = 'approved', is_verified = true,
              reviewed_at = NOW(), reviewed_by = 'admin'
@@ -1272,18 +1277,10 @@ router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
   try {
     /* 1 Nov 2026, Jeffery: "Expired or missing mandatory documents should prevent
        approval until corrected." Checked HERE, not only on her screen. */
-    const g = await pool.query(`SELECT status, oavct_expiry, fix_docs,
-        COALESCE((SELECT array_agg(doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS have
-        FROM drivers d WHERE d.id = $1`, [req.params.id]);
-    if (!g.rows.length) return res.status(404).json({ error: 'not_found' });
-    const have = g.rows[0].have || [], exp = g.rows[0].oavct_expiry;
-    const missing = REQUIRED_DOCS.filter(t => !have.includes(t));
-    const toFix = g.rows[0].fix_docs || [];
-    const oavct = !exp ? 'missing' : (new Date(exp).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok');
+    const g = await approvalGate(req.params.id);
+    if (!g) return res.status(404).json({ error: 'not_found' });
     /* an already-approved driver whose services are being changed is not re-examined */
-    if (g.rows[0].status !== 'approved' && (missing.length || toFix.length || oavct !== 'ok')) {
-      return res.status(409).json({ error: 'not_ready', missing, to_fix: toFix, oavct });
-    }
+    if (g.status !== 'approved' && !g.ok) return res.status(409).json({ error: 'not_ready', missing: g.missing, to_fix: g.to_fix, oavct: g.oavct });
     const r = await pool.query(`
       UPDATE drivers SET status = 'approved', is_verified = true, is_active = true,
              rejection_reason = NULL, reviewed_at = NOW(), reviewed_by = $2,
@@ -1292,7 +1289,7 @@ router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     console.log('[CONSOLE] driver ' + req.params.id + ' APPROVED by ' + who);
     /* was: so HaitiBiznis sends the welcome only on a NEW approval, not on a change of services */
-    res.json({ driver: r.rows[0], was: g.rows[0].status });
+    res.json({ driver: r.rows[0], was: g.status });
   } catch (e) { res.status(400).json({ error: 'approve_failed' }); }
 });
 router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
@@ -1311,6 +1308,20 @@ router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
 });
 /* Jeffery 3 Nov: the national ID card is OPTIONAL (the licence carries the NIF) */
 const REQUIRED_DOCS = ['selfie', 'license', 'oavct', 'vehicle'];
+/* The ONE document check every approve door uses (Jennifer's console AND the MsouWout admin page):
+   the required photos, nothing left to redo, an OAVCT date that is not past. Jeffery 1-3 Nov: "no driver
+   can be approved with missing or expired mandatory documents". */
+async function approvalGate(id) {
+  const g = await pool.query(`SELECT status, oavct_expiry, fix_docs,
+      COALESCE((SELECT array_agg(doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS have
+      FROM drivers d WHERE d.id = $1`, [id]);
+  if (!g.rows.length) return null;
+  const have = g.rows[0].have || [], exp = g.rows[0].oavct_expiry;
+  const missing = REQUIRED_DOCS.filter(t => !have.includes(t));
+  const toFix = g.rows[0].fix_docs || [];
+  const oavct = !exp ? 'missing' : (new Date(exp).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10) ? 'expired' : 'ok');
+  return { status: g.rows[0].status, missing, to_fix: toFix, oavct, ok: !missing.length && !toFix.length && oavct === 'ok' };
+}
 /* every change to a registration, with who made it (Jeffery 3 Nov: "every correction is logged") */
 function logEvent(driverId, kind, who, detail) {
   return pool.query('INSERT INTO driver_events (driver_id, kind, by, detail) VALUES ($1, $2, $3, $4)',

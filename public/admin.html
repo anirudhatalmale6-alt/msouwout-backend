@@ -804,7 +804,13 @@ async function loadDrivers(status) {
 }
 
 async function approveDriver(id) {
-  await fetch(API_BASE + '/api/drivers/' + id + '/approve', { method: 'PATCH', headers: apiHeaders() });
+  const r = await fetch(API_BASE + '/api/drivers/' + id + '/approve', { method: 'PATCH', headers: apiHeaders() });
+  /* 3 Nov 2026: the same document check as Jennifer's console - say what is missing */
+  if (r.status === 409) {
+    const j = await r.json().catch(() => ({}));
+    alert('Cannot approve yet.' + ((j.missing || []).length ? '\nMissing photos: ' + j.missing.join(', ') : '')
+      + ((j.to_fix || []).length ? '\nTo redo: ' + j.to_fix.join(', ') : '') + (j.oavct && j.oavct !== 'ok' ? '\nOAVCT date: ' + j.oavct : ''));
+  }
   loadDrivers('pending');
 }
 
