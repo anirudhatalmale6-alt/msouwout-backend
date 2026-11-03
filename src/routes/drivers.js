@@ -234,9 +234,21 @@ router.post('/:id/documents', async (req, res) => {
       return res.status(413).json({ error: 'Image too large' });
     }
 
-    const driver = await pool.query('SELECT id FROM drivers WHERE id = $1', [id]);
+    const driver = await pool.query('SELECT id, status, created_at FROM drivers WHERE id = $1', [id]);
     if (driver.rows.length === 0) {
       return res.status(404).json({ error: 'Driver not found' });
+    }
+    /* 3 Nov 2026 (Jeffery: "Only the assigned Ajan or authorized admin can modify
+       documents"). This door has no login - the sign-up form and the LajanMaker
+       queue use it right after registering. So it may only ADD a photo that is not
+       there yet, while the driver is pending and within 72 h of signing up.
+       REPLACING a photo goes through the console or the Ajan's login (HaitiBiznis,
+       /internal/console/:id/document), which checks who and logs it. */
+    const dv = driver.rows[0];
+    const fresh = dv.created_at && (Date.now() - new Date(dv.created_at).getTime()) < 72 * 3600 * 1000;
+    const has = await pool.query('SELECT 1 FROM driver_documents WHERE driver_id = $1 AND doc_type = $2', [id, doc_type]);
+    if (has.rows.length || dv.status !== 'pending' || !fresh) {
+      return res.status(403).json({ error: 'locked', message: 'Photo already received or registration closed: corrections go through the Ajan login or the console.' });
     }
 
     await pool.query(`
