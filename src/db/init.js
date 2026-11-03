@@ -808,6 +808,8 @@ async function runMigrations(client) {
         -- approval check still needs the OAVCT photo + a valid date. Kept as a record once the OAVCT is in.
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_assist BOOLEAN NOT NULL DEFAULT false;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_assist_at TIMESTAMP WITH TIME ZONE;
+        -- 3 Nov 2026: the registering phone's own secret key, so a retry after a lost answer finds ITS registration
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS client_ref VARCHAR(80);
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);

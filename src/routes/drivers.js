@@ -93,7 +93,12 @@ router.post('/', async (req, res) => {
     const { full_name, phone, email, whatsapp, city, vehicle_type, license_plate,
             license_number, vehicle_make, vehicle_model, vehicle_color,
             oavct_number, oavct_expiry, preferred_zones, preferred_service,
-            referral_partner, referral_code, syndicate, vehicle_year, oavct_assist } = req.body;
+            referral_partner, referral_code, syndicate, vehicle_year, oavct_assist, client_ref } = req.body;
+    /* 3 Nov 2026 (Jeffery: "test ... a weak internet connection, including closing and reopening the app"):
+       the phone's own random key for THIS registration. If the answer was lost and the phone asks again with the
+       SAME key, it gets its driver back instead of "already registered" (and its photos can still go). Anybody
+       else asking with that phone number still gets 409 - the key is never shown or returned. */
+    const ref = /^[A-Za-z0-9_-]{16,80}$/.test(String(client_ref || '')) ? String(client_ref) : null;
 
     if (!full_name || !phone || !vehicle_type) {
       return res.status(400).json({ error: 'full_name, phone, and vehicle_type are required' });
@@ -104,7 +109,13 @@ router.post('/', async (req, res) => {
     const typedCode = String(referral_code || '').trim().slice(0, 50) || null;
 
     // Check for duplicate phone
-    const existing = await pool.query('SELECT id FROM drivers WHERE phone = $1', [phone]);
+    const existing = await pool.query('SELECT id, full_name, phone, vehicle_type, status, created_at, client_ref, referral_code, referral_attached FROM drivers WHERE phone = $1', [phone]);
+    if (existing.rows.length > 0 && ref && existing.rows[0].client_ref === ref) {
+      const e = existing.rows[0];
+      logEvent(e.id, 'resumed', 'form', { note: 'same phone asked again after a lost answer' });
+      return res.status(200).json({ resumed: true, driver: { id: e.id, full_name: e.full_name, phone: e.phone, vehicle_type: e.vehicle_type, status: e.status, created_at: e.created_at },
+        ajan: e.referral_attached && e.referral_code ? { code: e.referral_code, organization: '' } : null });
+    }
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'A driver with this phone number already exists', code: 'duplicate_phone' });
     }
@@ -116,8 +127,8 @@ router.post('/', async (req, res) => {
       INSERT INTO drivers (full_name, phone, email, whatsapp, city, vehicle_type, license_plate,
                           license_number, vehicle_make, vehicle_model, vehicle_color,
                           oavct_number, oavct_expiry, preferred_zones, preferred_service,
-                          referral_partner, referral_code, syndicate, vehicle_year, status, referral_typed)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'pending', $17)
+                          referral_partner, referral_code, syndicate, vehicle_year, status, referral_typed, client_ref)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'pending', $17, $20)
       RETURNING id, full_name, phone, vehicle_type, status, created_at
     `, [
       full_name, phone, email || null, whatsapp || null, city || null, vehicle_type,
@@ -126,7 +137,7 @@ router.post('/', async (req, res) => {
       oavct_number || null, expiry,
       preferred_zones || null, service,
       referral_partner || null, typedCode,
-      syndicate || null, Number.isFinite(yearInt) ? yearInt : null
+      syndicate || null, Number.isFinite(yearInt) ? yearInt : null, ref
     ]);
 
     /* Only say it worked if a row actually came back.
