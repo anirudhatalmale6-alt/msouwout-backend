@@ -1309,7 +1309,8 @@ router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
     res.json({ driver: r.rows[0] });
   } catch (e) { res.status(400).json({ error: 'reject_failed' }); }
 });
-const REQUIRED_DOCS = ['selfie', 'id', 'license', 'oavct', 'vehicle'];
+/* Jeffery 3 Nov: the national ID card is OPTIONAL (the licence carries the NIF) */
+const REQUIRED_DOCS = ['selfie', 'license', 'oavct', 'vehicle'];
 /* every change to a registration, with who made it (Jeffery 3 Nov: "every correction is logged") */
 function logEvent(driverId, kind, who, detail) {
   return pool.query('INSERT INTO driver_events (driver_id, kind, by, detail) VALUES ($1, $2, $3, $4)',
