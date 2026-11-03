@@ -1248,6 +1248,9 @@ router.get('/internal/console/list', internalKey, async (req, res) => {
     const r = await pool.query(`SELECT ${CONSOLE_COLS} FROM drivers d ${where} ORDER BY d.created_at DESC LIMIT 300`, params);
     const c = await pool.query(`SELECT status, COUNT(*)::int AS n FROM drivers GROUP BY status`);
     const counts = {}; c.rows.forEach(x => { counts[x.status] = x.n; });
+    /* Jeffery 3 Nov: "correction-requested" - pending drivers Jennifer sent back (part of the pending number) */
+    const f = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers WHERE status = 'pending' AND COALESCE(array_length(fix_docs, 1), 0) > 0`);
+    counts.fix = f.rows[0].n;
     res.json({ drivers: r.rows, counts });
   } catch (e) { res.status(500).json({ error: 'list_failed' }); }
 });
