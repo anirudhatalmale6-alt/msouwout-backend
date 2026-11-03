@@ -1,0 +1,33 @@
+name: Reopen rejected drivers (status codes only)
+
+# 3 Nov 2026, Jeffery: keep Fabrice D'mitri Germain and Eliassaint Messa "pending
+# review rather than automatically reactivating them". Calls the console's own
+# reopen route (rejected -> pending, logged) for the ids given. Prints nothing
+# but the HTTP status of each call.
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: comma-separated driver ids
+        required: true
+      by:
+        description: name recorded in the driver history
+        required: true
+        default: Jeffery (via developer)
+
+jobs:
+  reopen:
+    runs-on: ubuntu-latest
+    env:
+      KEY: ${{ secrets.INTERNAL_SERVICE_KEY }}
+      IDS: ${{ github.event.inputs.ids }}
+      BY: ${{ github.event.inputs.by }}
+    steps:
+      - name: Reopen
+        run: |
+          set -eu
+          for id in $(echo "$IDS" | tr ',' ' '); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "x-internal-key: $KEY" -H 'Content-Type: application/json' \
+              -d "{\"by\":\"$BY\",\"note\":\"pending review (Jeffery 3 Nov)\"}" "https://msouwout-backend.onrender.com/api/drivers/internal/console/$id/reopen")
+            echo "$id -> $code"
+          done
