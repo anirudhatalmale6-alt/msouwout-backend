@@ -93,7 +93,7 @@ router.post('/', async (req, res) => {
     const { full_name, phone, email, whatsapp, city, vehicle_type, license_plate,
             license_number, vehicle_make, vehicle_model, vehicle_color,
             oavct_number, oavct_expiry, preferred_zones, preferred_service,
-            referral_partner, referral_code, syndicate, vehicle_year } = req.body;
+            referral_partner, referral_code, syndicate, vehicle_year, oavct_assist } = req.body;
 
     if (!full_name || !phone || !vehicle_type) {
       return res.status(400).json({ error: 'full_name, phone, and vehicle_type are required' });
@@ -144,6 +144,12 @@ router.post('/', async (req, res) => {
     if (!created || !created.id) {
       console.error('Driver registration produced no row for', phone);
       return res.status(500).json({ error: 'Enskripsyon an pa anrejistre. Tanpri eseye ankò.' });
+    }
+    /* 3 Nov 2026 (Jeffery, OAVCT ASSISTANCE): "🟠 ENSKRI — OAVCT POKO REGLE". Only a MARK: the driver is
+       pending like everybody, and approvalGate() still refuses him until the OAVCT photo + a valid date. */
+    if (oavct_assist === true || oavct_assist === 'true' || oavct_assist === 1) {
+      await pool.query('UPDATE drivers SET oavct_assist = true, oavct_assist_at = NOW() WHERE id = $1', [created.id]);
+      logEvent(created.id, 'oavct_assist', 'form', { note: 'registered without OAVCT (assistance)' });
     }
     /* WHICH AJAN, AND WHICH ORGANISATION (15 Oct 2026).
        If an Ajan code came with the signup, record the driver against that
@@ -1242,7 +1248,7 @@ const CONSOLE_COLS = `d.id, d.full_name, d.phone, d.whatsapp, d.city, d.vehicle_
   d.vehicle_year, d.vehicle_color, d.license_plate, d.license_number, d.oavct_number, d.oavct_expiry,
   d.referral_partner, d.referral_code, d.referral_typed, d.referral_attached, d.preferred_service,
   d.status, d.is_verified, d.rejection_reason, d.reviewed_by, d.reviewed_at, d.created_at, d.fix_docs, d.fix_note,
-  d.welcome_status, d.welcome_channel, d.welcome_by, d.welcome_at, d.welcome_note,
+  d.welcome_status, d.welcome_channel, d.welcome_by, d.welcome_at, d.welcome_note, d.oavct_assist, d.oavct_assist_at,
   (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id)::int AS doc_count,
   COALESCE((SELECT array_agg(dd.doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS doc_types`;
 router.get('/internal/console/list', internalKey, async (req, res) => {
@@ -1256,6 +1262,10 @@ router.get('/internal/console/list', internalKey, async (req, res) => {
     /* Jeffery 3 Nov: "correction-requested" - pending drivers Jennifer sent back (part of the pending number) */
     const f = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers WHERE status = 'pending' AND COALESCE(array_length(fix_docs, 1), 0) > 0`);
     counts.fix = f.rows[0].n;
+    /* OAVCT assistance still open: marked, pending, and no OAVCT photo or no valid date yet */
+    const oa = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers d WHERE status = 'pending' AND oavct_assist
+      AND (oavct_expiry IS NULL OR oavct_expiry < CURRENT_DATE OR NOT EXISTS (SELECT 1 FROM driver_documents dd WHERE dd.driver_id = d.id AND dd.doc_type = 'oavct'))`);
+    counts.oavct_assist = oa.rows[0].n;
     res.json({ drivers: r.rows, counts });
   } catch (e) { res.status(500).json({ error: 'list_failed' }); }
 });

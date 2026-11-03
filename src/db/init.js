@@ -804,6 +804,10 @@ async function runMigrations(client) {
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_by VARCHAR(80);
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE drivers ADD COLUMN IF NOT EXISTS welcome_note TEXT;
+        -- 3 Nov 2026 (Jeffery, OAVCT ASSISTANCE): registered WITHOUT an OAVCT yet. Stays pending; the one
+        -- approval check still needs the OAVCT photo + a valid date. Kept as a record once the OAVCT is in.
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_assist BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_assist_at TIMESTAMP WITH TIME ZONE;
         CREATE INDEX IF NOT EXISTS idx_drivers_referral_partner ON drivers (referral_partner);
         CREATE INDEX IF NOT EXISTS idx_drivers_syndicate ON drivers (syndicate);
       `);
