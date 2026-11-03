@@ -1262,8 +1262,9 @@ router.get('/internal/console/list', internalKey, async (req, res) => {
     /* Jeffery 3 Nov: "correction-requested" - pending drivers Jennifer sent back (part of the pending number) */
     const f = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers WHERE status = 'pending' AND COALESCE(array_length(fix_docs, 1), 0) > 0`);
     counts.fix = f.rows[0].n;
-    /* OAVCT assistance still open: marked, pending, and no OAVCT photo or no valid date yet */
-    const oa = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers d WHERE status = 'pending' AND oavct_assist
+    /* OAVCT assistance (Jeffery 3 Nov evening): every PENDING driver whose OAVCT is not in order - no document,
+       no date or expired - whether or not the Ajan ticked the box */
+    const oa = await pool.query(`SELECT COUNT(*)::int AS n FROM drivers d WHERE status = 'pending'
       AND (oavct_expiry IS NULL OR oavct_expiry < CURRENT_DATE OR NOT EXISTS (SELECT 1 FROM driver_documents dd WHERE dd.driver_id = d.id AND dd.doc_type = 'oavct'))`);
     counts.oavct_assist = oa.rows[0].n;
     res.json({ drivers: r.rows, counts });
