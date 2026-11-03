@@ -841,6 +841,18 @@ async function runMigrations(client) {
           UNIQUE(driver_id, doc_type)
         );
         CREATE INDEX IF NOT EXISTS idx_driver_documents_driver ON driver_documents (driver_id);
+        -- 3 Nov 2026 (Jeffery: "every correction is logged"): who changed what on a
+        -- registration - a photo, a field, a status - and when.
+        ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS updated_by VARCHAR(80);
+        CREATE TABLE IF NOT EXISTS driver_events (
+          id SERIAL PRIMARY KEY,
+          driver_id UUID NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+          kind VARCHAR(30) NOT NULL,
+          by VARCHAR(80),
+          detail JSONB,
+          at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_driver_events_driver ON driver_events (driver_id, at);
       `);
       // A ride ordered in Haiti is described in words, not coordinates: "Delmas 33,
       // devan famasi a". The table only had lat/lng, and they were NOT NULL, so a

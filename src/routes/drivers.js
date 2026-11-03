@@ -247,6 +247,8 @@ router.post('/:id/documents', async (req, res) => {
     `, [id, doc_type, mime, b64]);
     /* the photo Jennifer asked to redo has been sent again */
     await pool.query(`UPDATE drivers SET fix_docs = NULLIF(array_remove(fix_docs, $2), '{}') WHERE id = $1 AND $2 = ANY(fix_docs)`, [id, doc_type]).catch(() => {});
+    await pool.query(`UPDATE driver_documents SET updated_by = 'form' WHERE driver_id = $1 AND doc_type = $2`, [id, doc_type]).catch(() => {});
+    logEvent(id, 'document', 'form', { doc_type });
 
     res.status(201).json({ saved: true, doc_type });
   } catch (err) {
@@ -1241,8 +1243,9 @@ router.get('/internal/console/:id', internalKey, async (req, res) => {
   try {
     const d = await pool.query(`SELECT ${CONSOLE_COLS} FROM drivers d WHERE d.id = $1`, [req.params.id]);
     if (!d.rows.length) return res.status(404).json({ error: 'not_found' });
-    const docs = await pool.query('SELECT doc_type, mime, image_data FROM driver_documents WHERE driver_id = $1', [req.params.id]);
-    res.json({ driver: d.rows[0], documents: docs.rows.map(x => ({ doc_type: x.doc_type, data_url: 'data:' + x.mime + ';base64,' + x.image_data })) });
+    const docs = await pool.query('SELECT doc_type, mime, image_data, created_at, updated_by FROM driver_documents WHERE driver_id = $1', [req.params.id]);
+    res.json({ driver: d.rows[0], documents: docs.rows.map(x => ({ doc_type: x.doc_type, at: x.created_at, by: x.updated_by || '',
+      data_url: 'data:' + x.mime + ';base64,' + x.image_data })) });
   } catch (e) { res.status(400).json({ error: 'not_found' }); }
 });
 router.post('/internal/console/:id/approve', internalKey, async (req, res) => {
@@ -1292,6 +1295,73 @@ router.post('/internal/console/:id/reject', internalKey, async (req, res) => {
   } catch (e) { res.status(400).json({ error: 'reject_failed' }); }
 });
 const REQUIRED_DOCS = ['selfie', 'id', 'license', 'oavct', 'vehicle'];
+/* every change to a registration, with who made it (Jeffery 3 Nov: "every correction is logged") */
+function logEvent(driverId, kind, who, detail) {
+  return pool.query('INSERT INTO driver_events (driver_id, kind, by, detail) VALUES ($1, $2, $3, $4)',
+    [driverId, kind, String(who || '').slice(0, 80), detail ? JSON.stringify(detail) : null]).catch(() => {});
+}
+/* Jennifer completes / corrects a registration herself (3 Nov 2026: "Mwen bezwen gen
+   posibilite pou m modifye enfòmasyon chofè yo"). Only these fields; the phone only
+   if no other driver has it; logged old → new. Never the status, never the Ajan. */
+const EDITABLE = ['full_name', 'phone', 'whatsapp', 'city', 'vehicle_type', 'vehicle_make', 'vehicle_model', 'vehicle_year',
+  'vehicle_color', 'license_plate', 'license_number', 'oavct_number', 'oavct_expiry', 'preferred_service'];
+router.post('/internal/console/:id/edit', internalKey, async (req, res) => {
+  const who = by(req);
+  const f = (req.body && req.body.fields) || {};
+  if (!who) return res.status(400).json({ error: 'name_required' });
+  try {
+    const cur = await pool.query('SELECT * FROM drivers WHERE id = $1', [req.params.id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'not_found' });
+    const old = cur.rows[0], sets = [], vals = [req.params.id], changed = {};
+    for (const k of EDITABLE) {
+      if (!(k in f)) continue;
+      let v = f[k] == null ? '' : String(f[k]).trim().slice(0, 120);
+      if (k === 'vehicle_type' && !['motorcycle', 'car', 'moto'].includes(v)) continue;
+      if (k === 'preferred_service' && !['ride', 'delivery', 'both'].includes(v)) continue;
+      if (k === 'vehicle_year') { const y = parseInt(v, 10); v = Number.isFinite(y) && y >= 1980 && y <= 2030 ? y : null; }
+      if (k === 'oavct_expiry') { v = /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v)) ? v : null; }
+      if (k === 'license_plate' && v) v = v.toUpperCase();
+      if (k === 'phone') {
+        const d = v.replace(/\D/g, ''); v = d.length === 8 ? '+509' + d : (d.length === 11 && d.startsWith('509') ? '+' + d : '');
+        if (!v) return res.status(400).json({ error: 'bad_phone' });
+        const dup = await pool.query(`SELECT id FROM drivers WHERE id <> $1 AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 8) = $2`, [req.params.id, v.slice(-8)]);
+        if (dup.rows.length) return res.status(409).json({ error: 'phone_taken' });
+      }
+      if (k === 'full_name' && !v) continue;
+      const before = old[k] instanceof Date ? old[k].toISOString().slice(0, 10) : (old[k] == null ? '' : String(old[k]));
+      const after = v == null ? '' : String(v);
+      if (before === after) continue;
+      vals.push(v === '' ? null : v); sets.push(k + ' = $' + vals.length); changed[k] = [before, after];
+    }
+    if (!sets.length) return res.json({ ok: true, changed: {} });
+    await pool.query('UPDATE drivers SET ' + sets.join(', ') + ' WHERE id = $1', vals);
+    await logEvent(req.params.id, 'edit', 'console:' + who, changed);
+    console.log('[CONSOLE] driver ' + req.params.id + ' edited by ' + who + ': ' + Object.keys(changed).join(','));
+    res.json({ ok: true, changed });
+  } catch (e) { res.status(400).json({ error: 'edit_failed' }); }
+});
+/* A rejected driver back to PENDING for a fresh review (3 Nov 2026, Jeffery: keep
+   Fabrice D'mitri Germain and Eliassaint Messa "pending review rather than
+   automatically reactivating them"). Only from 'rejected'; nothing is approved. */
+router.post('/internal/console/:id/reopen', internalKey, async (req, res) => {
+  const who = by(req);
+  if (!who) return res.status(400).json({ error: 'name_required' });
+  try {
+    const r = await pool.query(`UPDATE drivers SET status = 'pending', is_verified = false WHERE id = $1 AND status = 'rejected'
+        RETURNING id, full_name, status, rejection_reason`, [req.params.id]);
+    if (!r.rows.length) return res.status(409).json({ error: 'not_rejected' });
+    await logEvent(req.params.id, 'reopen', 'console:' + who, { note: String((req.body && req.body.note) || '').slice(0, 200), was: r.rows[0].rejection_reason || '' });
+    console.log('[CONSOLE] driver ' + req.params.id + ' back to pending by ' + who);
+    res.json({ driver: r.rows[0] });
+  } catch (e) { res.status(400).json({ error: 'reopen_failed' }); }
+});
+/* the history of a registration, for the console */
+router.get('/internal/console/:id/events', internalKey, async (req, res) => {
+  try {
+    const r = await pool.query('SELECT kind, by, detail, at FROM driver_events WHERE driver_id = $1 ORDER BY at DESC LIMIT 50', [req.params.id]);
+    res.json({ events: r.rows });
+  } catch (e) { res.status(400).json({ error: 'not_found' }); }
+});
 /* Send back one or more documents to redo (status stays PENDING, registration,
    Ajan and the other photos untouched). */
 router.post('/internal/console/:id/fix', internalKey, async (req, res) => {
@@ -1304,6 +1374,7 @@ router.post('/internal/console/:id/fix', internalKey, async (req, res) => {
         WHERE id = $1 AND status = 'pending' RETURNING id, fix_docs, fix_note`, [req.params.id, docs, note || null, 'console:' + who]);
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     console.log('[CONSOLE] driver ' + req.params.id + ' documents to redo ' + docs.join(',') + ' by ' + who);
+    await logEvent(req.params.id, 'fix_request', 'console:' + who, { docs, note });
     res.json(r.rows[0]);
   } catch (e) { res.status(400).json({ error: 'fix_failed' }); }
 });
@@ -1316,6 +1387,7 @@ router.post('/internal/console/:id/oavct', internalKey, async (req, res) => {
     const r = await pool.query(`UPDATE drivers SET oavct_expiry = $2 WHERE id = $1 RETURNING id, oavct_expiry`, [req.params.id, exp]);
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     console.log('[CONSOLE] driver ' + req.params.id + ' OAVCT expiry ' + exp + ' by ' + who);
+    await logEvent(req.params.id, 'oavct_date', 'console:' + who, { expiry: exp });
     res.json(r.rows[0]);
   } catch (e) { res.status(400).json({ error: 'oavct_failed' }); }
 });
@@ -1329,10 +1401,12 @@ router.post('/internal/console/:id/document', internalKey, async (req, res) => {
   try {
     const d = await pool.query('SELECT id FROM drivers WHERE id = $1', [req.params.id]);
     if (!d.rows.length) return res.status(404).json({ error: 'not_found' });
-    await pool.query(`INSERT INTO driver_documents (driver_id, doc_type, mime, image_data) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (driver_id, doc_type) DO UPDATE SET mime = EXCLUDED.mime, image_data = EXCLUDED.image_data, created_at = NOW()`,
-      [req.params.id, t, m[1], m[2]]);
+    const whoTag = /^ajan:/.test(who) ? who : 'console:' + who;
+    await pool.query(`INSERT INTO driver_documents (driver_id, doc_type, mime, image_data, updated_by) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (driver_id, doc_type) DO UPDATE SET mime = EXCLUDED.mime, image_data = EXCLUDED.image_data, created_at = NOW(), updated_by = EXCLUDED.updated_by`,
+      [req.params.id, t, m[1], m[2], whoTag]);
     await pool.query(`UPDATE drivers SET fix_docs = NULLIF(array_remove(fix_docs, $2), '{}') WHERE id = $1`, [req.params.id, t]);
+    await logEvent(req.params.id, 'document', whoTag, { doc_type: t });
     console.log('[CONSOLE] driver ' + req.params.id + ' document ' + t + ' replaced by ' + who);
     res.json({ ok: true, doc_type: t });
   } catch (e) { res.status(400).json({ error: 'document_failed' }); }
