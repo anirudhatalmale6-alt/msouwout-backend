@@ -1392,6 +1392,38 @@ router.post('/internal/console/:id/edit', internalKey, async (req, res) => {
 /* A rejected driver back to PENDING for a fresh review (3 Nov 2026, Jeffery: keep
    Fabrice D'mitri Germain and Eliassaint Messa "pending review rather than
    automatically reactivating them"). Only from 'rejected'; nothing is approved. */
+/* 4 Nov 2026 (Jeffery: "You may delete the fake driver ... provided you first confirm it is the exact test
+   record and preserve an audit entry"). Removes ONE record a test created by mistake - and only if EVERYTHING
+   matches: same id + phone + full name, still pending, no photo, no Ajan, never on a ride, created < 7 days ago.
+   The permanent admin_audit table keeps who/what/why (driver_events go with the row). */
+router.post('/internal/console/:id/remove-test-record', internalKey, async (req, res) => {
+  const b = req.body || {}, who = String(b.by || '').trim().slice(0, 60), why = String(b.reason || '').trim().slice(0, 120);
+  if (!who || !why || !b.phone || !b.full_name) return res.status(400).json({ error: 'by_reason_phone_name_required' });
+  const client = await pool.connect();
+  try {
+    const d = await client.query(`SELECT id, full_name, phone, status, referral_attached, created_at,
+        (SELECT COUNT(*)::int FROM driver_documents dd WHERE dd.driver_id = d.id) AS docs
+        FROM drivers d WHERE d.id = $1`, [req.params.id]);
+    const r = d.rows[0];
+    if (!r) return res.status(404).json({ error: 'not_found' });
+    const checks = { phone: r.phone === String(b.phone), name: r.full_name === String(b.full_name), pending: r.status === 'pending',
+      no_docs: r.docs === 0, no_ajan: !r.referral_attached, recent: Date.now() - new Date(r.created_at).getTime() < 7 * 86400000 };
+    const rides = await client.query(`SELECT COUNT(*)::int AS n FROM ride_requests WHERE driver_id = $1`, [r.id]).catch(() => ({ rows: [{ n: 0 }] }));
+    checks.no_rides = rides.rows[0].n === 0;
+    if (Object.values(checks).some((v) => !v)) return res.status(409).json({ error: 'not_the_test_record', checks });
+    await client.query('BEGIN');
+    await client.query(`INSERT INTO admin_audit (method, path, ip, user_agent, cred, outcome, status, note) VALUES ('DELETE', $1, '', 'console', 'internal', 'removed', 200, $2)`,
+      ['/api/drivers/' + r.id, ('TEST RECORD REMOVED by ' + who + ': "' + r.full_name + '" ' + r.phone + ' created ' + new Date(r.created_at).toISOString() + ' - ' + why).slice(0, 300)]);
+    await client.query('DELETE FROM driver_events WHERE driver_id = $1', [r.id]).catch(() => {});
+    const del = await client.query('DELETE FROM drivers WHERE id = $1 AND status = $2', [r.id, 'pending']);
+    await client.query('COMMIT');
+    console.warn('[TEST RECORD REMOVED] ' + r.id + ' by ' + who + ' (' + why + ')');
+    res.json({ removed: del.rowCount, checks });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    res.status(500).json({ error: 'remove_failed' });
+  } finally { client.release(); }
+});
 router.post('/internal/console/:id/reopen', internalKey, async (req, res) => {
   const who = by(req);
   if (!who) return res.status(400).json({ error: 'name_required' });

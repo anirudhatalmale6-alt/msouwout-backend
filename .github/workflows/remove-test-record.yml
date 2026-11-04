@@ -1,0 +1,30 @@
+name: Remove ONE test record (exact match only)
+
+# 4 Nov 2026 - Jeffery: "You may delete the fake driver ... provided you first confirm it is the exact test
+# record and preserve an audit entry". The server refuses unless id + phone + full name match and the record
+# is pending, photo-less, Ajan-less, ride-less and recent; it writes admin_audit first. Prints status + checks only.
+on:
+  workflow_dispatch:
+    inputs:
+      id: { description: 'driver id', required: true }
+      phone: { description: 'exact phone', required: true }
+      full_name: { description: 'exact full name', required: true }
+
+jobs:
+  remove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      K: ${{ secrets.INTERNAL_SERVICE_KEY }}
+      ID: ${{ github.event.inputs.id }}
+      PH: ${{ github.event.inputs.phone }}
+      NM: ${{ github.event.inputs.full_name }}
+    steps:
+      - name: remove
+        run: |
+          set -u
+          case "$ID" in *[!0-9a-f-]*) echo bad id; exit 1;; esac
+          body=$(python3 -c 'import json,os;print(json.dumps({"by":"Anirudha (workflow)","reason":"test record created by mistake 3 Nov - Jeffery YES 4 Nov","phone":os.environ["PH"],"full_name":os.environ["NM"]}))')
+          code=$(curl -s -m 120 -o /tmp/o.json -w '%{http_code}' -X POST -H "x-internal-key: $K" -H 'Content-Type: application/json' -d "$body" "https://msouwout-backend.onrender.com/api/drivers/internal/console/$ID/remove-test-record")
+          echo "http: $code"
+          python3 -c "import json;d=json.load(open('/tmp/o.json'));print('removed:',d.get('removed'),'error:',d.get('error'),'checks:',d.get('checks'))"
