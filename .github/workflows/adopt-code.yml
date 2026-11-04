@@ -1,0 +1,28 @@
+name: Badge adopts the Ajan's own sign-up code
+
+# 4 Nov 2026 - Jeffery: "Proceed with activating JC-JENN7 as Jennifer's official Ajan code, replacing KB-CILVZAC7."
+# Calls haitibiznis-api POST /api/agents/internal/adopt-code (all the checks run there and on MyPlopPlop: no driver
+# or referral on the old code, the sign-up is hers, the old code is retired). Prints the result words only.
+on:
+  workflow_dispatch:
+    inputs:
+      agentId: { description: 'badge LMA number', required: true }
+      code: { description: 'code to adopt', required: true }
+
+jobs:
+  adopt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      K: ${{ secrets.INTERNAL_SERVICE_KEY }}
+      AID: ${{ github.event.inputs.agentId }}
+      CODE: ${{ github.event.inputs.code }}
+    steps:
+      - name: adopt
+        run: |
+          set -u
+          case "$AID$CODE" in *[!A-Za-z0-9-]*) echo bad input; exit 1;; esac
+          body=$(python3 -c 'import json,os;print(json.dumps({"agentId":os.environ["AID"],"code":os.environ["CODE"],"by":"Anirudha (Jeffery OK 4 Nov)"}))')
+          code=$(curl -s -m 150 -o /tmp/o.json -w '%{http_code}' -X POST -H "x-internal-key: $K" -H 'Content-Type: application/json' -d "$body" https://haitibiznis-api.onrender.com/api/agents/internal/adopt-code)
+          echo "http: $code"
+          python3 -c "import json;d=json.load(open('/tmp/o.json'));a=d.get('agent') or {};print('ok:',d.get('ok'),'error:',d.get('error'),'drivers:',d.get('drivers'),'referrals:',d.get('referrals'),'code now:',a.get('referralCode'))"
