@@ -1,0 +1,38 @@
+name: Ajan code lookup (status words only)
+
+# 4 Nov 2026: read-only. Asks MyPlopPlop's Ajan engine about one referral code and one phone.
+# Prints STATUS WORDS and codes only - never a name or a phone number (this repository is public).
+on:
+  workflow_dispatch:
+    inputs:
+      phone:
+        description: 'phone (masked in the log)'
+        required: true
+      code:
+        description: 'referral code to look up'
+        required: true
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      K: ${{ secrets.INTERNAL_SERVICE_KEY }}
+      PH: ${{ github.event.inputs.phone }}
+      CODE: ${{ github.event.inputs.code }}
+    steps:
+      - name: lookup
+        run: |
+          set -u
+          echo "::add-mask::$PH"
+          case "$CODE" in *[!A-Za-z0-9-]*) echo bad code; exit 1;; esac
+          code=$(curl -s -m 120 -o /tmp/o.json -w '%{http_code}' -H "x-internal-key: $K" "https://myplopplop-api.onrender.com/api/internal/ajan-code?phone=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "$PH")&code=$CODE")
+          echo "http: $code"
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/o.json'))
+          bc, bp, ps = d.get('byCode'), d.get('byPhone'), d.get('pendingSignup')
+          print('byCode:', bc and {'code': bc.get('code'), 'status': bc.get('status'), 'phoneMatch': bc.get('phoneMatch')})
+          print('byPhone:', bp and {'code': bp.get('code'), 'status': bp.get('status')})
+          print('pendingSignup:', ps and {'code': ps.get('code')})
+          PY
