@@ -1331,7 +1331,9 @@ router.post('/internal/busy', (req, res, next) => {
       `SELECT DISTINCT driver_id::text AS id FROM ride_requests
         WHERE driver_id = ANY($1::uuid[]) AND status IN ('accepted','in_progress')`, [ids]);
     /* 5 Nov 2026: OAVCT expired = not available for a new delivery either */
-    const h = await pool.query(`SELECT id::text AS id FROM drivers d WHERE id = ANY($1::uuid[]) AND ${require('../services/oavctWatch').heldSql('d')}`, [ids]);
+    /* OAVCT expired, or the Apple review/test account (never a real package) = not available for a delivery */
+    const h = await pool.query(`SELECT id::text AS id FROM drivers d WHERE id = ANY($1::uuid[])
+        AND (${require('../services/oavctWatch').heldSql('d')} OR COALESCE(d.is_test_account, false))`, [ids]);
     res.json({ busy: r.rows.map((x) => x.id), held: h.rows.map((x) => x.id) });
   } catch (e) {
     console.error('internal busy error:', e.message);

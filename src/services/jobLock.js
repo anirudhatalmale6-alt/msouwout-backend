@@ -26,8 +26,10 @@ async function acquire(driverId, jobId, source) {
     await c.query('BEGIN');
     const d = await c.query('SELECT id FROM drivers WHERE id = $1 FOR UPDATE', [driverId]);
     if (!d.rows.length) { await c.query('ROLLBACK'); return { ok: false, reason: 'not_found' }; }
-    const held = (await c.query(`SELECT ${require('./oavctWatch').heldSql('d')} AS h FROM drivers d WHERE id = $1`, [driverId])).rows[0].h;
-    if (held) { await c.query('ROLLBACK'); return { ok: false, reason: 'oavct_expired' }; }
+    const hx = (await c.query(`SELECT ${require('./oavctWatch').heldSql('d')} AS h, COALESCE(d.is_test_account, false) AS t FROM drivers d WHERE id = $1`, [driverId])).rows[0];
+    if (hx.h) { await c.query('ROLLBACK'); return { ok: false, reason: 'oavct_expired' }; }
+    /* 5 Nov 2026, Jeffery: the Apple review account is "permanently restricted from real rides and packages" */
+    if (hx.t) { await c.query('ROLLBACK'); return { ok: false, reason: 'test_account' }; }
     const ride = await c.query(`SELECT tracking_code FROM ride_requests WHERE driver_id = $1 AND status IN ('accepted','in_progress') LIMIT 1`, [driverId]);
     if (ride.rows.length) { await c.query('ROLLBACK'); return { ok: false, reason: 'on_ride', ride: ride.rows[0].tracking_code }; }
     const lockRow = await c.query('SELECT job_id FROM driver_job_locks WHERE driver_id = $1', [driverId]);
