@@ -386,6 +386,24 @@ router.post('/request', async (req, res) => {
                    ' but no shared-ride fee is configured for it - ignored.');
     }
 
+    /* ═══ SCHEDULED RIDE (4 Nov 2026, "bring back the Schedule A Ride feature and make sure it works") ═══
+       Her date + time (Haiti clock) from the "Pita" choice. Stored, and the ride waits as 'scheduled' - off every
+       driver screen - until dispatch.releaseScheduled() puts it on the board RELEASE_BEFORE_MIN before. */
+    let scheduledAt = null;
+    if (b.timeMode === 'later' || b.scheduled === true || b.scheduledDate || b.scheduled_at) {
+      scheduledAt = b.scheduled_at ? new Date(b.scheduled_at) : dispatch.haitiToUtc(b.scheduledDate, b.scheduledTime);
+      if (!scheduledAt || isNaN(scheduledAt.getTime())) {
+        return res.status(400).json({ error: 'Chwazi dat ak lè kous la. / Pick the date and time of the ride.', code: 'schedule_invalid' });
+      }
+      const ahead = (scheduledAt.getTime() - Date.now()) / 60000;
+      if (ahead < dispatch.SCHEDULE_MIN_AHEAD_MIN) {
+        return res.status(400).json({ error: 'Pou yon kous pwograme, chwazi yon lè omwen ' + dispatch.SCHEDULE_MIN_AHEAD_MIN + ' minit pi devan. Pou kounye a, chwazi "Kounye a". / Pick a time at least ' + dispatch.SCHEDULE_MIN_AHEAD_MIN + ' minutes ahead, or choose "Now".', code: 'schedule_too_soon', min_minutes: dispatch.SCHEDULE_MIN_AHEAD_MIN });
+      }
+      if (ahead > dispatch.SCHEDULE_MAX_AHEAD_DAYS * 1440) {
+        return res.status(400).json({ error: 'Ou ka pwograme yon kous jiska ' + dispatch.SCHEDULE_MAX_AHEAD_DAYS + ' jou davans. / Up to ' + dispatch.SCHEDULE_MAX_AHEAD_DAYS + ' days ahead.', code: 'schedule_too_far' });
+      }
+    }
+
     // Delegation validation
     const delegated = is_delegated === true;
     if (delegated && (!passenger_name || !passenger_phone)) {
@@ -487,10 +505,10 @@ router.post('/request', async (req, res) => {
         medical_protection, medical_fee, dash_fee, msouwout_medical_fee, driver_dash_share, total_with_protection,
         is_delegated, orderer_name, orderer_phone, passenger_name, passenger_phone,
         pickup_address, dropoff_address, owner_token, client_request_id,
-        is_test,
+        is_test, scheduled_at,
         created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'searching',
-               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW())`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$34,
+               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$35,NOW())`,
       [rideId, customer_name || 'Kliyan', customer_phone, user_id || null,
        pickupLat, pickupLng, dropoffLat, dropoffLng,
        rideType, estimate.distance_km, estimate.duration_min, finalPrice,
@@ -504,7 +522,8 @@ router.post('/request', async (req, res) => {
        /* 🔑 Decided from the PHONE NUMBER, never from anything the caller
           sends. A real customer cannot book a free ride. See
           services/testmode.js. */
-       rideIsTest(req.body)]
+       rideIsTest(req.body),
+       scheduledAt ? 'scheduled' : 'searching', scheduledAt]
     );
     }
 
@@ -516,7 +535,8 @@ router.post('/request', async (req, res) => {
          middleware at the top of this file. The ordering app keeps it and puts
          it in the passenger's own link; nothing else can ask for it later. */
       owner_token: ownerToken,
-      status: 'searching',
+      status: scheduledAt ? 'scheduled' : 'searching',
+      scheduled_at: scheduledAt,
       pickup_address: from.address,
       dropoff_address: to.address,
       distance_km: estimate.distance_km,
@@ -525,8 +545,9 @@ router.post('/request', async (req, res) => {
       platform_fee: commission.platform_fee,
       driver_earning: commission.driver_earning,
       payment_method: chosenMethod,
-      message: 'Ap chèche chofè...'
+      message: scheduledAt ? 'Kous ou pwograme. N ap chèche chofè a ' + dispatch.RELEASE_BEFORE_MIN + ' minit anvan lè a.' : 'Ap chèche chofè...'
     };
+    if (scheduledAt) response.release_before_min = dispatch.RELEASE_BEFORE_MIN;
 
     response.medical_protection = true;
     response.medical_fee = medicalFee;
@@ -555,7 +576,7 @@ router.post('/request', async (req, res) => {
        still created - she may want to wait anyway, and refusing outright would
        lose a fare we could have served ten minutes later - but she is told the
        truth instead of watching a spinner for five hours. */
-    try {
+    if (!scheduledAt) try {
       const cov = await dispatch.coverage(pickupLat, pickupLng, rideType);
       response.coverage = cov;
       if (!cov.covered) {
@@ -575,7 +596,8 @@ router.post('/request', async (req, res) => {
     /* ⛔ Not awaited. A slow push service must never make her booking slow,
        and a broken one must never make it fail. The driver board is still the
        system of record; this only means he does not have to be staring at it. */
-    alerts.alertNewRide({
+    /* a scheduled ride is announced when it is released (dispatch.releaseScheduled), not days early */
+    if (!scheduledAt) alerts.alertNewRide({
       id: rideId, tracking_code: trackingCode, price: finalPrice,
       pickup_address: from.address, dropoff_address: to.address,
       /* 🚨 Without this, every test ride pushes "Nouvo kous" to every real
@@ -1069,6 +1091,8 @@ function normVehicle(v) {
 
 router.get('/available', async (req, res) => {
   try {
+    /* a free-tier instance can sleep through the minute timer: the drivers' own board check releases what is due */
+    await dispatch.releaseScheduled().catch((e) => console.error('[SCHEDULE] release on board read failed:', e.message));
     /* A RIDE is 'moto' or 'car'. A DRIVER is 'motorcycle' or 'car' - the two
        halves of the system have always spelled it differently. The old check
        was `=== 'moto'`, so a driver app sending its own vehicle_type of

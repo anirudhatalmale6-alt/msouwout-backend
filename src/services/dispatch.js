@@ -326,6 +326,55 @@ async function needsAttention() {
 }
 
 let timer = null;
+/* ═══ SCHEDULED RIDES (4 Nov 2026) ═══════════════════════════════════════
+   Jeffery: "bring back the Schedule A Ride feature and make sure it works". On 1 Oct the "Pita" button was hidden
+   because a ride booked for later went to drivers IMMEDIATELY. Now it waits as 'scheduled' - no driver screen, no
+   alert, no surge count reads that status - and is put on the board RELEASE_BEFORE_MIN before her time. Released
+   = 'searching' + keep_waiting_until = her time + EXPIRE_AFTER_MIN, so expireStale (judged on created_at, which
+   is the booking day) cannot close it the moment it appears. Idempotent: only 'scheduled' rows move. */
+const RELEASE_BEFORE_MIN = 30;
+const SCHEDULE_MIN_AHEAD_MIN = 45;
+const SCHEDULE_MAX_AHEAD_DAYS = 7;
+async function releaseScheduled(limit = 100) {
+  const q = await pool.query(
+    `UPDATE ride_requests
+        SET status = 'searching', released_at = NOW(),
+            keep_waiting_until = scheduled_at + make_interval(mins => $2),
+            updated_at = NOW()
+      WHERE id IN (
+        SELECT id FROM ride_requests
+         WHERE status = 'scheduled' AND scheduled_at IS NOT NULL
+           AND scheduled_at <= NOW() + make_interval(mins => $1)
+         ORDER BY scheduled_at
+         LIMIT $3)
+      RETURNING id, tracking_code, price, pickup_address, dropoff_address, is_test, scheduled_at`,
+    [RELEASE_BEFORE_MIN, EXPIRE_AFTER_MIN, limit]);
+  for (const r of q.rows) {
+    console.log('[SCHEDULE] ' + r.tracking_code + ' released to drivers (booked for ' + new Date(r.scheduled_at).toISOString() + ')');
+    try {
+      require('./driverAlerts').alertNewRide({ id: r.id, tracking_code: r.tracking_code, price: r.price,
+        pickup_address: r.pickup_address, dropoff_address: r.dropoff_address, is_test: r.is_test })
+        .catch(e => console.error('[SCHEDULE] alert failed:', e.message));
+    } catch (e) { console.error('[SCHEDULE] alerts unavailable:', e.message); }
+  }
+  return q.rows;
+}
+/* Her date + time are Haiti wall-clock ("2026-11-05", "07:30"); DST-aware through Intl, like the ticket QR clock. */
+function haitiToUtc(date, time) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || '')), t = /^(\d{1,2}):(\d{2})$/.exec(String(time || ''));
+  if (!m || !t) return null;
+  const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], +t[1], +t[2]);
+  const off = (ms) => {
+    const p = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Port-au-Prince', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      .formatToParts(new Date(ms)).reduce((o, x) => (o[x.type] = x.value, o), {});
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - ms;
+  };
+  let utc = guess - off(guess);
+  utc = guess - off(utc);
+  return new Date(utc);
+}
+let schedTimer = null;
+
 function startSweeper(everyMs = 5 * 60 * 1000) {
   if (timer) return;
   const tick = () => releaseAbandoned()
@@ -350,8 +399,10 @@ function startSweeper(everyMs = 5 * 60 * 1000) {
   timer = setInterval(tick, everyMs);
   if (timer.unref) timer.unref();
   tick();
+  /* scheduled rides need minute precision, not the 5-minute tidy-up */
+  if (!schedTimer) { schedTimer = setInterval(() => releaseScheduled().catch(e => console.error('[SCHEDULE] release failed:', e.message)), 60 * 1000); if (schedTimer.unref) schedTimer.unref(); }
 }
-function stopSweeper() { if (timer) { clearInterval(timer); timer = null; } }
+function stopSweeper() { if (timer) { clearInterval(timer); timer = null; } if (schedTimer) { clearInterval(schedTimer); schedTimer = null; } }
 
 module.exports = {
   COVERAGE_KM, POSITION_FRESH_MIN, NUDGE_AFTER_MIN, EXPIRE_AFTER_MIN, KEEP_WAITING_MIN,
@@ -359,5 +410,4 @@ module.exports = {
   STUCK_IN_PROGRESS_MIN,
   coverage, waitState, expireStale, releaseAbandoned, paidAndStranded,
   stuckInProgress, needsAttention, refundsOwed, problemsOpen,
-  startSweeper, stopSweeper
-};
+  startSweeper, stopSweeper, releaseScheduled, haitiToUtc, RELEASE_BEFORE_MIN, SCHEDULE_MIN_AHEAD_MIN, SCHEDULE_MAX_AHEAD_DAYS };

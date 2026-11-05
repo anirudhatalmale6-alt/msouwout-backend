@@ -577,6 +577,10 @@ async function runMigrations(client) {
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS internal_test_note TEXT;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS internal_test_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS released_at TIMESTAMP WITH TIME ZONE;
+        -- 4 Nov 2026 (Jeffery: "bring back the Schedule A Ride feature and make sure it works"): the time she booked for.
+        -- A ride with a scheduled_at waits as 'scheduled' (off every driver screen) until it is released shortly before.
+        ALTER TABLE ride_requests ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP WITH TIME ZONE;
+        CREATE INDEX IF NOT EXISTS idx_ride_requests_scheduled ON ride_requests (scheduled_at) WHERE status = 'scheduled';
         /* Where to reach a driver's phone when the page is CLOSED. One row per
            browser, not per driver: a man with a phone and a tablet gets told
            on both. endpoint is UNIQUE because that is what the browser
