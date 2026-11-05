@@ -1809,6 +1809,52 @@ router.patch('/:id/cancel', async (req, res) => {
   }
 });
 
+/* 5 Nov 2026 (Jennifer: "Mpa wè kote sou plateforme lan poum wè pati ranbousman an"): passenger-ride refunds had a
+   server route but NO screen. Her console (HaitiBiznis, console code) reads and settles them through these two
+   internal doors (INTERNAL_SERVICE_KEY), with the same rules as PATCH /:id/refund below: a transfer reference is
+   required, never more than is owed, recorded once, the reason it was owed is kept. Test rides are never listed. */
+router.get('/internal/refunds', internalOnly, async (req, res) => {
+  try {
+    const st = ['owed', 'refunded', 'all'].includes(req.query.status) ? req.query.status : 'owed';
+    const r = await pool.query(
+      `SELECT r.id, r.tracking_code, r.customer_name, r.customer_phone, r.refund_due, r.refund_status, r.refund_note,
+              r.refunded_at, r.updated_at, r.status, r.payment_method, r.pickup_address, r.dropoff_address, r.created_at,
+              (SELECT json_agg(json_build_object('provider', p.provider, 'method', p.method, 'amount', p.amount, 'reference', COALESCE(p.provider_ref, p.reference_id)))
+                 FROM payments p WHERE p.subject_type = 'ride' AND p.subject_id::text = r.id::text AND p.status = 'completed') AS payments
+         FROM ride_requests r
+        WHERE COALESCE(r.refund_due, 0) > 0 AND COALESCE(r.is_test, false) = false AND COALESCE(r.internal_test, false) = false
+          AND (${st === 'all' ? "r.refund_status IN ('owed','refunded')" : 'r.refund_status = $1'})
+        ORDER BY r.updated_at DESC LIMIT 200`, st === 'all' ? [] : [st]);
+    const owed = r.rows.filter((x) => x.refund_status === 'owed');
+    res.json({ refunds: r.rows, owed: { count: owed.length, total: owed.reduce((t, x) => t + Number(x.refund_due || 0), 0) } });
+  } catch (e) { console.error('internal refunds error:', e.message); res.status(500).json({ error: 'server' }); }
+});
+router.post('/internal/refunds/:id/refunded', internalOnly, async (req, res) => {
+  try {
+    const b = req.body || {}, who = String(b.by || '').trim().slice(0, 60), reference = String(b.reference || '').trim().slice(0, 120);
+    if (!UUID_RE.test(String(req.params.id))) return res.status(404).json({ error: 'not_found' });
+    if (!who) return res.status(400).json({ error: 'name_required' });
+    if (!reference) return res.status(400).json({ error: 'reference_required' });
+    const r = await pool.query(`SELECT id, tracking_code, refund_due, refund_status FROM ride_requests WHERE id = $1
+                                   AND COALESCE(is_test, false) = false AND COALESCE(internal_test, false) = false`, [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+    const ride = r.rows[0];
+    if (!Number(ride.refund_due)) return res.status(400).json({ error: 'nothing_owed' });
+    if (ride.refund_status === 'refunded') return res.status(409).json({ error: 'already_refunded' });
+    const paid = b.amount != null && b.amount !== '' ? Math.round(Number(b.amount)) : Number(ride.refund_due);
+    if (!(paid > 0) || paid > Number(ride.refund_due)) return res.status(400).json({ error: 'bad_amount', max: Number(ride.refund_due) });
+    const note = String(b.note || '').trim().slice(0, 300);
+    const done = await pool.query(
+      `UPDATE ride_requests SET refund_status = 'refunded', refunded_at = NOW(),
+              refund_note = TRIM(COALESCE(refund_note, '') || ' | ' || $2), updated_at = NOW()
+        WHERE id = $1 AND refund_status = 'owed' RETURNING id`,
+      [ride.id, `refunded ref=${reference} amount=${paid} by=console:${who}` + (note ? ` note=${note}` : '')]);
+    if (!done.rows.length) return res.status(409).json({ error: 'already_refunded' });
+    console.warn(`[REFUND] ${ride.tracking_code}: ${paid} HTG recorded as paid by ${who}, ref ${reference}`);
+    res.json({ ok: true, tracking_code: ride.tracking_code, amount: paid });
+  } catch (e) { console.error('internal refund mark error:', e.message); res.status(500).json({ error: 'server' }); }
+});
+
 /* PATCH /api/rides/:id/refund — mark an owed refund as settled BY HAND.
    Jeffery, 24 Sep: "Our administration will process refunds manually and
    record the transfer reference. Do not build automatic refunds."
