@@ -1553,6 +1553,34 @@ router.post('/internal/console/:id/agent', internalKey, async (req, res) => {
     res.json({ ok: true, code: ajan.koutyeCode, organization: ajan.organization || '' });
   } catch (e) { res.status(400).json({ error: 'agent_failed' }); }
 });
+/* 5 Nov 2026 (Jeffery, Similien Jeff DRV-1001): a driver registered from an Ajan's LajanMaker phone reached MsouWout
+   with NO Ajan code, so the Ajan could no longer correct his photos ("Pa gen ajan"). The phone that registered him
+   still holds that registration's own key (client_ref, sent with the signup and stored here); with it the Ajan's
+   approved phone may claim the driver - only if NOBODY is credited yet. Same credit path as Jennifer's 🪪 button. */
+router.post('/internal/console/:id/claim', internalKey, async (req, res) => {
+  const who = by(req);
+  const code = String((req.body && req.body.code) || '').trim().slice(0, 50);
+  const ref = String((req.body && req.body.client_ref) || '');
+  if (!who || !code || ref.length < 16) return res.status(400).json({ error: 'name_code_ref_required' });
+  try {
+    const d = await pool.query('SELECT id, full_name, phone, referral_code, referral_attached, client_ref FROM drivers WHERE id = $1', [req.params.id]);
+    if (!d.rows.length) return res.status(404).json({ error: 'not_found' });
+    const row = d.rows[0];
+    if (row.referral_attached) return res.status(409).json({ error: 'already_credited', code: row.referral_code });
+    const crypto = require('crypto'), a = Buffer.from(String(row.client_ref || '')), b = Buffer.from(ref);
+    if (!row.client_ref || a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(403).json({ error: 'not_registered_here' });
+    const ajan = await attachDriverAgent({ code, name: row.full_name, phone: row.phone });
+    if (!ajan.ok) return res.status(503).json({ error: 'engine_unavailable' });
+    if (!ajan.koutyeCode) return res.status(400).json({ error: 'code_not_found' });
+    await pool.query(
+      `UPDATE drivers SET referral_typed = $1, referral_code = $2, referral_attached = true, referral_checked_at = NOW(),
+              referral_partner = COALESCE($3, referral_partner) WHERE id = $4`,
+      [code, ajan.koutyeCode, ajan.organization || null, row.id]);
+    await logEvent(row.id, 'agent_claim', who, { code: ajan.koutyeCode });
+    console.log('[AJAN] driver ' + row.id + ' claimed by ' + who + ' -> ' + ajan.koutyeCode);
+    res.json({ ok: true, code: ajan.koutyeCode });
+  } catch (e) { res.status(400).json({ error: 'claim_failed' }); }
+});
 /* Drivers per Ajan code: registered and VERIFIED (approved) - what the 1 000 HTG
    per 5 verified drivers is counted on. Only credits the engine confirmed. */
 router.get('/internal/console-stats/agents', internalKey, async (req, res) => {
