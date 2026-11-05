@@ -1136,11 +1136,16 @@ router.get('/available', async (req, res) => {
        possible. */
     let boardIsTest = false;
     if (req.query.driver_id && /^[0-9a-f-]{36}$/i.test(String(req.query.driver_id))) {
-      const who = await pool.query('SELECT is_test_account, preferred_service FROM drivers WHERE id = $1',
-                                   [req.query.driver_id]);
+      const who = await pool.query(`SELECT is_test_account, preferred_service, ${require('../services/oavctWatch').heldSql('drivers')} AS oavct_held
+                                      FROM drivers WHERE id = $1`, [req.query.driver_id]);
       boardIsTest = !!(who.rows.length && who.rows[0].is_test_account);
       /* LIVREZON only: no passengers on his board (accepting is refused anyway) */
       if (who.rows.length && who.rows[0].preferred_service === 'delivery') where += ' AND false';
+      /* 5 Nov 2026: OAVCT expired = no new ride on his board (services/oavctWatch.js) */
+      else if (who.rows.length && who.rows[0].oavct_held) where += ' AND false';
+      /* 5 Nov 2026: holding a MyPlopPlop job (parcel / shop delivery) = an empty board. A lock whose job
+         MyPlopPlop says is over is cleared; if MyPlopPlop cannot be asked, the board stays empty. */
+      else if (who.rows.length && (await require('../services/jobLock').heal(req.query.driver_id, { cached: true })) !== 'free') where += ' AND false';
     }
     params.push(boardIsTest);
     where += ` AND COALESCE(r.is_test,false) = $${params.length}`;
@@ -1307,6 +1312,68 @@ router.get('/', async (req, res) => {
   }
 });
 
+/* 5 Nov 2026 - MyPlopPlop's SERVER asks (INTERNAL_SERVICE_KEY): which of these drivers are on an
+   unfinished passenger ride? Read-only. Used so a driver on a ride is not offered a delivery. */
+router.post('/internal/busy', (req, res, next) => {
+  const crypto = require('crypto');
+  const expected = process.env.INTERNAL_SERVICE_KEY;
+  if (!expected) return res.status(503).json({ error: 'link_not_configured' });
+  const a = Buffer.from(String(req.get('x-internal-key') || ''));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}, async (req, res) => {
+  try {
+    const ids = (Array.isArray(req.body && req.body.driver_ids) ? req.body.driver_ids : [])
+      .map(String).filter((x) => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 50);
+    if (!ids.length) return res.json({ busy: [] });
+    const r = await pool.query(
+      `SELECT DISTINCT driver_id::text AS id FROM ride_requests
+        WHERE driver_id = ANY($1::uuid[]) AND status IN ('accepted','in_progress')`, [ids]);
+    /* 5 Nov 2026: OAVCT expired = not available for a new delivery either */
+    const h = await pool.query(`SELECT id::text AS id FROM drivers d WHERE id = ANY($1::uuid[]) AND ${require('../services/oavctWatch').heldSql('d')}`, [ids]);
+    res.json({ busy: r.rows.map((x) => x.id), held: h.rows.map((x) => x.id) });
+  } catch (e) {
+    console.error('internal busy error:', e.message);
+    res.status(500).json({ error: 'server' });
+  }
+});
+
+/* 5 Nov 2026 - MyPlopPlop's SERVER takes / gives back the one-job lock (services/jobLock.js).
+   POST /internal/lock   {driver_id, job_id} -> 200 {ok:true} | 409 {ok:false, reason:'on_ride'|'other_job'} | 404
+   POST /internal/unlock {driver_id, job_id} -> 200 {released} */
+function internalOnly(req, res, next) {
+  const crypto = require('crypto');
+  const expected = process.env.INTERNAL_SERVICE_KEY;
+  if (!expected) return res.status(503).json({ error: 'link_not_configured' });
+  const a = Buffer.from(String(req.get('x-internal-key') || ''));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+router.post('/internal/lock', internalOnly, async (req, res) => {
+  try {
+    const id = String((req.body && req.body.driver_id) || '');
+    if (!UUID_RE.test(id)) return res.status(404).json({ ok: false, reason: 'not_found' });
+    const out = await require('../services/jobLock').acquire(id, String((req.body && req.body.job_id) || ''), 'mpp');
+    res.status(out.ok ? 200 : (out.reason === 'not_found' ? 404 : (out.reason === 'bad_job' ? 400 : 409))).json(out);
+  } catch (e) {
+    console.error('internal lock error:', e.message);
+    res.status(500).json({ ok: false, reason: 'server' });
+  }
+});
+router.post('/internal/unlock', internalOnly, async (req, res) => {
+  try {
+    const id = String((req.body && req.body.driver_id) || '');
+    if (!UUID_RE.test(id)) return res.json({ released: 0 });
+    res.json({ released: await require('../services/jobLock').release(id, String((req.body && req.body.job_id) || '')) });
+  } catch (e) {
+    console.error('internal unlock error:', e.message);
+    res.status(500).json({ error: 'server' });
+  }
+});
+
 // PATCH /api/rides/:id/accept — Driver accepts ride
 router.patch('/:id/accept', async (req, res) => {
   try {
@@ -1357,6 +1424,21 @@ router.patch('/:id/accept', async (req, res) => {
         code: 'test_account' });
     }
 
+    /* 5 Nov 2026, Jeffery: OAVCT expired = no NEW ride. Only accepting is refused; a ride he already has
+       goes on to the end (start / complete are not checked). */
+    if (await require('../services/oavctWatch').isHeld(driver_id)) {
+      return res.status(403).json({ error: 'OAVCT ou ekspire. Ou pa ka pran nouvo kous jiskaske nouvo OAVCT ou verifye.', code: 'oavct_expired' });
+    }
+    /* 5 Nov 2026: holding a MyPlopPlop job = no passenger ride (services/jobLock.js). Fail-closed: a lock
+       MyPlopPlop cannot confirm as finished still refuses. */
+    const lockState = await require('../services/jobLock').heal(driver_id);
+    if (lockState === 'busy') {
+      return res.status(409).json({ error: 'Ou gen yon livrezon ki poko fini. Fini l anvan ou pran yon kous.', code: 'driver_busy' });
+    }
+    if (lockState === 'unverified') {
+      return res.status(409).json({ error: 'Nou pa ka verifye si livrezon ou an fini. Eseye ankò nan kèk segonn.', code: 'busy_unverified' });
+    }
+
     // With ten drivers watching the same board, two can tap Accept in the same
     // second — and the SELECT above would say "searching" to both. The status is
     // re-checked inside the UPDATE itself, so exactly one row can change hands.
@@ -1368,15 +1450,31 @@ router.patch('/:id/accept', async (req, res) => {
     // The second passenger would be told a driver is coming who does not know she
     // exists. One unfinished ride per driver, decided by the database so two taps
     // in the same second cannot both slip through.
-    const claim = await pool.query(
-      `UPDATE ride_requests SET driver_id = $1, status = 'accepted', accepted_at = NOW(), updated_at = NOW()
-        WHERE id = $2 AND status = 'searching'
-          AND NOT EXISTS (
-            SELECT 1 FROM ride_requests busy
-             WHERE busy.driver_id = $1 AND busy.status IN ('accepted','in_progress')
-          )`,
-      [driver_id, req.params.id]
-    );
+    /* The driver row is taken FOR UPDATE first, as services/jobLock.js acquire() does: a MyPlopPlop lock and
+       this claim in the same instant are serialized, and the claim re-checks the lock table. */
+    let claim, lockedNow = false;
+    const tx = await pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query('SELECT id FROM drivers WHERE id = $1 FOR UPDATE', [driver_id]);
+      lockedNow = (await tx.query('SELECT 1 FROM driver_job_locks WHERE driver_id = $1', [driver_id])).rows.length > 0;
+      claim = lockedNow ? { rowCount: 0 } : await tx.query(
+        `UPDATE ride_requests SET driver_id = $1, status = 'accepted', accepted_at = NOW(), updated_at = NOW()
+          WHERE id = $2 AND status = 'searching'
+            AND NOT EXISTS (
+              SELECT 1 FROM ride_requests busy
+               WHERE busy.driver_id = $1 AND busy.status IN ('accepted','in_progress')
+            )`,
+        [driver_id, req.params.id]
+      );
+      await tx.query('COMMIT');
+    } catch (e) {
+      await tx.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally { tx.release(); }
+    if (lockedNow) {
+      return res.status(409).json({ error: 'Ou gen yon livrezon ki poko fini. Fini l anvan ou pran yon kous.', code: 'driver_busy' });
+    }
     if (claim.rowCount === 0) {
       // Refused for one of two very different reasons. Telling him "already taken"
       // when the truth is "you have not finished your own ride" sends him hunting

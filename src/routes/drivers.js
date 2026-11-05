@@ -693,6 +693,8 @@ router.post('/login', async (req, res) => {
       ORDER BY created_at DESC LIMIT 20
     `, [driver.id]);
 
+    /* 5 Nov 2026: his OAVCT state, for the reminder / hold banner on his dashboard */
+    try { driver.oavct = await require('../services/oavctWatch').state(driver.id); } catch (e) { driver.oavct = null; }
     /* 18 Oct 2026: his own score, shown on his dashboard. */
     try { driver.rating = await require('../services/ratings').driverScore(driver.id); } catch (e) { driver.rating = null; }
 
@@ -1262,6 +1264,11 @@ const CONSOLE_COLS = `d.id, d.full_name, d.phone, d.whatsapp, d.city, d.vehicle_
   d.welcome_status, d.welcome_channel, d.welcome_by, d.welcome_at, d.welcome_note, d.oavct_assist, d.oavct_assist_at,
   (SELECT COUNT(*) FROM driver_documents dd WHERE dd.driver_id = d.id)::int AS doc_count,
   COALESCE((SELECT array_agg(dd.doc_type) FROM driver_documents dd WHERE dd.driver_id = d.id), '{}') AS doc_types`;
+/* 5 Nov 2026: Jennifer's OAVCT watch - approved drivers held (expired), expiring within 30 days, no date. */
+router.get('/internal/console/oavct', internalKey, async (req, res) => {
+  try { res.json(await require('../services/oavctWatch').overview()); }
+  catch (e) { res.status(500).json({ error: 'server' }); }
+});
 router.get('/internal/console/list', internalKey, async (req, res) => {
   try {
     const st = String(req.query.status || 'pending');
@@ -1369,6 +1376,10 @@ router.post('/internal/console/:id/edit', internalKey, async (req, res) => {
       if (k === 'preferred_service' && !['ride', 'delivery', 'both'].includes(v)) continue;
       if (k === 'vehicle_year') { const y = parseInt(v, 10); v = Number.isFinite(y) && y >= 1980 && y <= 2030 ? y : null; }
       if (k === 'oavct_expiry') { v = /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v)) ? v : null; }
+      if (k === 'oavct_expiry' && v) {
+        const rc = await require('../services/oavctWatch').renewalCheck(req.params.id, v);
+        if (rc) return res.status(409).json({ error: rc, message: 'Mete foto nouvo OAVCT a anvan, epi apre sa nouvo dat ki sou li a.' });
+      }
       if (k === 'license_plate' && v) v = v.toUpperCase();
       if (k === 'phone') {
         const d = v.replace(/\D/g, ''); v = d.length === 8 ? '+509' + d : (d.length === 11 && d.startsWith('509') ? '+' + d : '');
@@ -1465,6 +1476,9 @@ router.post('/internal/console/:id/oavct', internalKey, async (req, res) => {
   const exp = String((req.body && req.body.expiry) || '');
   if (!who || !/^\d{4}-\d{2}-\d{2}$/.test(exp) || isNaN(Date.parse(exp))) return res.status(400).json({ error: 'name_and_date_required' });
   try {
+    /* 5 Nov 2026: a renewal needs the new OAVCT photo first (services/oavctWatch.js renewalCheck) */
+    const rc = await require('../services/oavctWatch').renewalCheck(req.params.id, exp);
+    if (rc) return res.status(409).json({ error: rc, message: 'Mete foto nouvo OAVCT a anvan, epi apre sa nouvo dat ki sou li a.' });
     const r = await pool.query(`UPDATE drivers SET oavct_expiry = $2 WHERE id = $1 RETURNING id, oavct_expiry`, [req.params.id, exp]);
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     console.log('[CONSOLE] driver ' + req.params.id + ' OAVCT expiry ' + exp + ' by ' + who);

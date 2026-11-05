@@ -118,6 +118,10 @@ app.listen(PORT, () => {
          Idempotent and bounded; a failure logs and the API carries on. */
       require('./services/dispatch').startSweeper();
       console.log('Dispatch sweeper started.');
+      /* 5 Nov 2026: OAVCT reminders / hold / lift, hourly (services/oavctWatch.js). A failure logs and the API carries on. */
+      const oavctRun = () => require('./services/oavctWatch').sweep().catch(e => console.error('[OAVCT] sweep failed:', e.message));
+      setTimeout(oavctRun, Number(process.env.OAVCT_FIRST_MS) || 60000);
+      setInterval(oavctRun, Number(process.env.OAVCT_EVERY_MS) || 3600000);
       console.log('Payment poller started.');
       /* Record what is owed on rides that finished before the ledger existed.
          Bounded, idempotent - (ride_id, recipient_type) is unique, so a second

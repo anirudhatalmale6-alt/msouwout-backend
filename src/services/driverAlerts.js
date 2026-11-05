@@ -122,6 +122,7 @@ async function alertNewRide(ride) {
       WHERE d.status = 'approved' AND d.is_verified = true AND d.is_active = true
         AND COALESCE(d.preferred_service, 'both') <> 'delivery'
         AND COALESCE(d.is_test_account, false) = $1
+        AND NOT ${require('./oavctWatch').heldSql('d')}
         AND p.failures < 5`, [wantTest]);
   if (!subs.rows.length) return { sent: 0, reason: 'nobody_subscribed' };
 
@@ -229,6 +230,28 @@ async function alertRideGone(driverId, ride, reason) {
   return { sent };
 }
 
+/* 5 Nov 2026: one message to ONE driver's phones (OAVCT reminders / hold). Same delivery as alertRideGone. */
+async function alertDriver(driverId, msg) {
+  if (!driverId) return { sent: 0, reason: 'no_driver' };
+  try { await init(); } catch (e) { return { sent: 0, reason: 'no_keys' }; }
+  const subs = await pool.query(`SELECT endpoint, subscription FROM driver_push WHERE driver_id = $1 AND failures < 5`, [driverId]);
+  if (!subs.rows.length) return { sent: 0, reason: 'nobody_subscribed' };
+  const payload = JSON.stringify({ title: String(msg.title || '').slice(0, 80), body: String(msg.body || '').slice(0, 200),
+    tag: msg.tag || 'msw-notice', url: 'https://msouwout.com/driver-login.html' });
+  let sent = 0;
+  await Promise.all(subs.rows.map(async row => {
+    try {
+      await webpush.sendNotification(row.subscription, payload, { TTL: 86400, urgency: 'high' });
+      sent++;
+      await pool.query('UPDATE driver_push SET last_ok = NOW(), failures = 0 WHERE endpoint = $1', [row.endpoint]);
+    } catch (err) {
+      if (err.statusCode === 404 || err.statusCode === 410) await pool.query('DELETE FROM driver_push WHERE endpoint = $1', [row.endpoint]);
+      else await pool.query('UPDATE driver_push SET failures = failures + 1 WHERE endpoint = $1', [row.endpoint]);
+    }
+  }));
+  return { sent };
+}
+
 /* 18 Oct 2026: a driver checks his OWN phone shows alerts. Only the
    subscription with this exact endpoint AND this driver is used - the endpoint
    is an unguessable URL only his browser knows, so nobody can page anyone else. */
@@ -254,4 +277,4 @@ async function testAlert(driverId, endpoint) {
   }
 }
 
-module.exports = { publicKey, subscribe, unsubscribe, alertNewRide, alertRideGone, init, testAlert };
+module.exports = { publicKey, subscribe, unsubscribe, alertNewRide, alertRideGone, alertDriver, init, testAlert };

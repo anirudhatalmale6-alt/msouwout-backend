@@ -1115,6 +1115,26 @@ async function runMigrations(client) {
         CREATE INDEX IF NOT EXISTS idx_test_ride_log_phone ON test_ride_log (phone);
       `);
 
+      /* 5 Nov 2026, Jeffery: "Any approved driver whose OAVCT expires must automatically become unavailable for
+         new rides and deliveries until a valid document is uploaded and verified." services/oavctWatch.js */
+      await client.query(`
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_hold_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE drivers ADD COLUMN IF NOT EXISTS oavct_notice VARCHAR(10);
+      `);
+
+      /* 5 Nov 2026, Jeffery: "If either server cannot verify the driver's availability, the system must
+         refuse a new assignment." ONE row per driver while he holds a MyPlopPlop job (parcel or shop
+         delivery). MyPlopPlop must obtain it here BEFORE its accept succeeds; a passenger accept is refused
+         while it exists. services/jobLock.js. */
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS driver_job_locks (
+          driver_id UUID PRIMARY KEY REFERENCES drivers(id) ON DELETE CASCADE,
+          source VARCHAR(20) NOT NULL DEFAULT 'mpp',
+          job_id VARCHAR(64) NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+      `);
+
       console.log('Migrations applied (incl. logistics, DASH settlements, referral partners, driver onboarding v2, DASH clinics).');
 }
 

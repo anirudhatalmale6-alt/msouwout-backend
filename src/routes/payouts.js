@@ -35,6 +35,29 @@ function wrap(fn) {
 // GET /api/payouts/driver/:id — his earnings and the state of his payouts.
 router.get('/driver/:id', wrap(req => payouts.statementFor(req.params.id)));
 
+/* GET /api/payouts/driver/:id/packages — 5 Nov 2026, Jeffery: "the driver's package earnings should be
+   visible in the MsouWout earnings dashboard, even if ride and delivery balances are accounted for
+   separately." Asked from MyPlopPlop's server (it holds that money); read-only, nothing is added to
+   the ride ledger here. MyPlopPlop not answering = { available:false }, never a made-up zero. */
+router.get('/driver/:id/packages', async (req, res) => {
+  const id = String(req.params.id || '');
+  const key = process.env.INTERNAL_SERVICE_KEY;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return res.status(404).json({ error: 'not_found' });
+  if (!key) return res.json({ available: false });
+  const MPP = process.env.KOUTYE_API_URL || 'https://myplopplop-api.onrender.com';
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 10000);
+  try {
+    const r = await fetch(MPP + '/api/internal/driver-earnings?msouwout_id=' + encodeURIComponent(id),
+      { headers: { 'x-internal-key': key }, signal: ctl.signal });
+    const j = r.ok ? await r.json().catch(() => null) : null;
+    if (!j) return res.json({ available: false });
+    res.json(Object.assign({ available: true }, j));
+  } catch (e) {
+    res.json({ available: false });
+  } finally { clearTimeout(t); }
+});
+
 // PUT /api/payouts/driver/:id/method — MonCash / NatCash / Bank, and his
 // wallet number. Refused with 409 while a payout of his is in flight.
 router.put('/driver/:id/method', wrap(req => payouts.setMethod(req.params.id, req.body || {})));
