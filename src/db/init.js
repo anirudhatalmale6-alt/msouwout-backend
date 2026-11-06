@@ -73,8 +73,17 @@ async function initDatabase(retries = 3) {
     // later boot happened to take the other branch. Run them every time.
     await runMigrations(client);
 
-    const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
-    await client.query(seed);
+    /* 6 Nov 2026: seed-zones.sql says ON CONFLICT DO NOTHING but zones has no unique key, so every boot since July
+       inserted the 18 launch zones AGAIN (186 copies each on 6 Nov). Now: seed only when no launch zone exists yet,
+       and fold existing exact copies back into one (dedupeSeedZones). */
+    const seeded = await client.query("SELECT count(*)::int AS n FROM zones WHERE created_by = 'system_seed'");
+    if (!seeded.rows[0].n) {
+      const seed = fs.readFileSync(path.join(__dirname, 'seed-zones.sql'), 'utf8');
+      await client.query(seed);
+      console.log('Launch zones seeded.');
+    } else {
+      await dedupeSeedZones(client);
+    }
     await seedDemoAccounts(client);
     console.log('Zones synced. Database ready!');
   } catch (err) {
@@ -83,6 +92,47 @@ async function initDatabase(retries = 3) {
   } finally {
     client.release();
   }
+}
+
+/* Exact copies of a launch zone (same name, description, type, polygon, service, active flag, hours, days) become ONE:
+   the oldest copy is kept, every row anywhere that points at a copy (any foreign key to zones + zone_audit_log) is
+   moved to the kept one, then the copies are deleted - all in one transaction. A zone an administrator edited differs
+   from the others, so it is its own group and is never touched. Safe to run on every boot: nothing to do = no change. */
+async function dedupeSeedZones(client) {
+  const g = await client.query(`
+    SELECT array_agg(id ORDER BY created_at, id) AS ids
+      FROM zones WHERE created_by = 'system_seed'
+     GROUP BY name, coalesce(description, ''), zone_type, geometry::text, service_rule, is_active,
+              active_from, active_until, coalesce(active_days::text, '')
+    HAVING count(*) > 1`);
+  if (!g.rows.length) return 0;
+  const fks = await client.query(`
+    SELECT kcu.table_name, kcu.column_name
+      FROM information_schema.referential_constraints rc
+      JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
+      JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name AND ccu.constraint_schema = rc.unique_constraint_schema
+     WHERE ccu.table_name = 'zones' AND ccu.column_name = 'id'`);
+  const audit = await client.query("SELECT to_regclass('zone_audit_log') IS NOT NULL AS ok");
+  let removed = 0;
+  await client.query('BEGIN');
+  try {
+    for (const r of g.rows) {
+      const keep = r.ids[0], drop = r.ids.slice(1);
+      for (const f of fks.rows) {
+        await client.query('UPDATE "' + f.table_name + '" SET "' + f.column_name + '" = $1 WHERE "' + f.column_name + '" = ANY($2::uuid[])', [keep, drop]);
+      }
+      if (audit.rows[0].ok) await client.query('UPDATE zone_audit_log SET zone_id = $1 WHERE zone_id = ANY($2::uuid[])', [keep, drop]);
+      const d = await client.query('DELETE FROM zones WHERE id = ANY($1::uuid[])', [drop]);
+      removed += d.rowCount;
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Launch zone de-duplication skipped (nothing changed):', e.message);
+    return 0;
+  }
+  console.log('Launch zones: ' + removed + ' duplicate rows removed, ' + g.rows.length + ' zones kept (one copy each).');
+  return removed;
 }
 
 async function runMigrations(client) {
