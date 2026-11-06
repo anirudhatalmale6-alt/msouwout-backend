@@ -1353,6 +1353,27 @@ function internalOnly(req, res, next) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'unauthorized' });
   next();
 }
+/* 6 Nov 2026 (Koli option A, Jeffery: "provided the driver remains within our approved operating areas"): the APPROVED
+   operating areas are the active GREEN zones - the same zones table validateTrip uses - with their hours. One copy per
+   polygon (the seed rows repeat). Read-only, internal key only: MyPlopPlop's wider package search. */
+router.get('/internal/operating-areas', internalOnly, async (req, res) => {
+  try {
+    const r = await pool.query("SELECT name, service_rule, active_from, active_until, active_days, geometry FROM zones WHERE is_active = true AND zone_type = 'green'");
+    const seen = new Set(), areas = [];
+    for (const z of r.rows) {
+      const g = typeof z.geometry === 'string' ? JSON.parse(z.geometry) : z.geometry;
+      const k = JSON.stringify(g);
+      if (!g || seen.has(k)) continue;
+      seen.add(k);
+      areas.push({ name: z.name, service: z.service_rule, from: z.active_from || null, until: z.active_until || null, days: z.active_days || null, polygon: g });
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json({ areas });
+  } catch (e) {
+    console.error('operating-areas error:', e.message);
+    res.status(500).json({ error: 'server' });
+  }
+});
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 router.post('/internal/lock', internalOnly, async (req, res) => {
   try {
