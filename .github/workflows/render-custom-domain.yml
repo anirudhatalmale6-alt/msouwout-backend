@@ -1,0 +1,60 @@
+name: Render custom domain (add / check)
+
+# 6 Nov 2026: Jeffery added the DNS record "e" CNAME -> haitibiznis-api.onrender.com at Namecheap for branded
+# Tike Lakay share links (e.tikelakay.com). This attaches that name to the Render service and reports Render's
+# verification + certificate status. Prints status words only; the key never leaves the runner.
+# Only names under tikelakay.com / haitibiznis.com are accepted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_id:
+        description: Render service ID (srv-...)
+        required: true
+        default: srv-d7o1inl7vvec739fslu0
+      domain:
+        description: Custom domain (e.g. e.tikelakay.com)
+        required: true
+      action:
+        description: add or check
+        required: true
+        default: check
+
+jobs:
+  domain:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SID: ${{ github.event.inputs.service_id }}
+      DOM: ${{ github.event.inputs.domain }}
+      ACT: ${{ github.event.inputs.action }}
+    steps:
+      - name: Validate
+        run: |
+          set -eu
+          [ -n "$RENDER_API_KEY" ] || { echo "no key"; exit 1; }
+          echo "$SID" | grep -Eq '^srv-[a-z0-9]{20}$' || { echo "bad service id"; exit 1; }
+          echo "$DOM" | grep -Eq '^[a-z0-9-]+\.(tikelakay|haitibiznis)\.com$' || { echo "domain not allowed"; exit 1; }
+          echo "$ACT" | grep -Eq '^(add|check)$' || { echo "bad action"; exit 1; }
+      - name: Add
+        if: ${{ github.event.inputs.action == 'add' }}
+        run: |
+          set -eu
+          code=$(curl -sS -o /tmp/add.json -w '%{http_code}' -X POST -H "Authorization: Bearer $RENDER_API_KEY" -H 'Content-Type: application/json' \
+            "https://api.render.com/v1/services/$SID/custom-domains" -d "{\"name\":\"$DOM\"}")
+          echo "add -> HTTP $code"
+          python3 -c "import json;d=json.load(open('/tmp/add.json'));d=d if isinstance(d,list) else [d];[print('  ',x.get('name'),x.get('domainType'),x.get('verificationStatus'),x.get('message','')) for x in d]" || true
+      - name: Check
+        run: |
+          set -eu
+          sleep 20
+          for i in 1 2 3; do
+            curl -sS -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/$SID/custom-domains?limit=50" -o /tmp/list.json
+            python3 -c "import json;[print('  ',x['customDomain'].get('name'),'type=',x['customDomain'].get('domainType'),'verification=',x['customDomain'].get('verificationStatus'),'created=',x['customDomain'].get('createdAt')) for x in json.load(open('/tmp/list.json'))]"
+            id=$(python3 -c "import json,os;print(next((x['customDomain']['id'] for x in json.load(open('/tmp/list.json')) if x['customDomain']['name']==os.environ['DOM']),''))")
+            if [ -n "$id" ]; then
+              curl -sS -o /dev/null -w "verify -> HTTP %{http_code}\n" -X POST -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services/$SID/custom-domains/$id/verify" || true
+            fi
+            sleep 30
+          done
+          echo "https check:"; curl -sS -o /dev/null -w "  https://$DOM/health -> %{http_code}\n" "https://$DOM/health" || echo "  https not ready yet"
